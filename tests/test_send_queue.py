@@ -95,3 +95,21 @@ def test_full_queue_rejects_without_unbounded_growth() -> None:
     release.set()
     first.join()
     queue.shutdown()
+
+
+def test_shutdown_does_not_block_when_queue_is_full() -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    def sender(item):
+        started.set()
+        release.wait(1)
+        return success(item)
+
+    queue = SendQueue(sender, capacity=1)
+    queue.start()
+    assert queue.submit_background(note("one"))
+    assert started.wait(1)
+    assert queue.submit_background(note("two"))
+    queue.shutdown(timeout=0.01)
+    release.set()

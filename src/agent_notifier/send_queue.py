@@ -81,7 +81,11 @@ class SendQueue:
             self._closed = True
             started = self._started
         if started:
-            self._queue.put(None)
+            try:
+                self._queue.put_nowait(None)
+            except Full:
+                # The worker observes _closed after draining the already accepted work.
+                pass
             self._thread.join(timeout)
 
     @property
@@ -102,3 +106,5 @@ class SendQueue:
                     task.done.set()
             finally:
                 self._queue.task_done()
+            if self._closed and self._queue.empty():
+                return

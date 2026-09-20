@@ -31,6 +31,10 @@ SECRET_PATTERNS = (
     re.compile(r"(?i)\b(bearer)\s+[A-Za-z0-9._~+/=-]+"),
     re.compile(r"(?i)\b(authorization|api[_-]?key|token|password)\s*[:=]\s*[^\s,;]+"),
     re.compile(r"\bsk-[A-Za-z0-9_-]{8,}\b"),
+    re.compile(
+        r"(?i)\b(user[_ -]?prompt|prompt|model[_ -]?output|output|request[_ -]?body)"
+        r"\s*[:=]\s*(?:\"[^\"]*\"|'[^']*'|[^,;]+)"
+    ),
 )
 
 

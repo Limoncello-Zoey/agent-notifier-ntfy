@@ -109,10 +109,37 @@ def test_full_send_queue_keeps_due_alert_for_retry() -> None:
 def test_notification_redacts_and_bounds_secrets() -> None:
     item = build_notification(
         config(),
-        event(status=None, error="Authorization: Bearer secret-value token=abcd " + "x" * 400),
+        event(
+            status=None,
+            error=(
+                "Authorization: Bearer secret-value; prompt='private words'; "
+                "output=model-secret; token=abcd " + "x" * 400
+            ),
+        ),
         "connection_failed",
     )
     assert "secret-value" not in item.message
     assert "abcd" not in item.message
+    assert "private words" not in item.message
+    assert "model-secret" not in item.message
     error_line = item.message.split("错误：", 1)[1]
     assert len(error_line) <= 240
+
+
+def test_missing_dynamic_fields_do_not_create_empty_labels() -> None:
+    item = build_notification(
+        config(),
+        event(model=None, status=None, attempt=None, error=None, transport="api"),
+        "transport_failure",
+    )
+    assert item.message == "通道：API\n状态：传输失败"
+
+
+def test_dedupe_record_expires_and_allows_a_later_failure() -> None:
+    sent = []
+    monitor = FailureMonitor(config(), lambda item: sent.append(item) or True)
+    monitor.ingest(event(), now=0)
+    assert monitor.tick(now=10) == 1
+    monitor.ingest(event(), now=41)
+    assert monitor.tick(now=51) == 1
+    assert len(sent) == 2

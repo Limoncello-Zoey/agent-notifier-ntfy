@@ -93,3 +93,26 @@ def test_unknown_endpoint_is_404(running_daemon) -> None:
     with pytest.raises(HTTPError) as raised:
         post(config, "/missing", {})
     assert raised.value.code == 404
+
+
+def test_invalid_method_and_malformed_json_are_rejected(running_daemon) -> None:
+    _, config, _ = running_daemon
+    put = Request(
+        f"http://127.0.0.1:{config.monitor.listen_port}/v1/logs",
+        data=b"{}",
+        headers={"Content-Type": "application/json"},
+        method="PUT",
+    )
+    with pytest.raises(HTTPError) as raised:
+        urlopen(put, timeout=2)
+    assert raised.value.code == 405
+
+    malformed = Request(
+        f"http://127.0.0.1:{config.monitor.listen_port}/v1/logs",
+        data=b"not-json",
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with pytest.raises(HTTPError) as raised:
+        urlopen(malformed, timeout=2)
+    assert raised.value.code == 400
