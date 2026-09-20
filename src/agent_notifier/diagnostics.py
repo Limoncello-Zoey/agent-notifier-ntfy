@@ -139,9 +139,23 @@ def _rules_check(codex_home: Path) -> dict[str, Any]:
     except (OSError, UnicodeError) as exc:
         return _check("notification_rules", False, f"无法读取 {path}: {exc}")
     markers_ok = text.count(RULES_START) == 1 and text.count(RULES_END) == 1
-    semantics_ok = "ntfy_send" in text and "优先级" in text
+    rules_text = ""
+    if markers_ok:
+        start = text.index(RULES_START) + len(RULES_START)
+        end = text.index(RULES_END)
+        if start <= end:
+            rules_text = text[start:end]
+        else:
+            markers_ok = False
+    required_semantics = ("ntfy_send", "优先级", "小点", "goal", "git commit")
+    semantics_ok = all(term in rules_text for term in required_semantics)
     ok = markers_ok and semantics_ok
-    detail = str(path) if ok else f"{path} 中缺少唯一且完整的 Agent Notifier 规则块"
+    detail = (
+        str(path)
+        if ok
+        else f"{path} 中缺少唯一且完整的 Agent Notifier 规则块"
+        "（需覆盖交还、长程小点、goal 和 git commit）"
+    )
     return _check("notification_rules", ok, detail)
 
 

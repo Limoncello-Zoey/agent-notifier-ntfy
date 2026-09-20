@@ -131,7 +131,7 @@ Windows 原生 Agent、Codex Web/Cloud、没有 systemd 用户实例的环境不
 2. `ntfy` CLI 可用；应用配置已创建或无损合并，用户给出的话题已设置为默认目标。
 3. 单实例 `agent-notifier.service` 已注册到用户级服务管理器、设置为自动启动且当前处于运行状态。
 4. Codex 中存在唯一、已启用的 `agent-notifier` STDIO MCP 条目，其稳定启动入口为 `agent-notifier mcp`。
-5. MCP 只启用 `ntfy_send`，并将该 Tool 的 `approval_mode` 设为 `approve`，避免停止前通知被交互审批阻断。
+5. MCP 只启用 `ntfy_send`，并将该 Tool 的 `approval_mode` 设为 `approve`，避免进度、Git 提交或停止前通知被交互审批阻断。
 6. Codex OTel 使用 OTLP/HTTP JSON 向 `http://127.0.0.1:4318/v1/logs` 导出，并保持 `log_user_prompt = false`。
 7. Codex 当前实际读取的全局 `AGENTS.md` 或 `AGENTS.override.md` 中存在唯一、带明确起止标记的通知规则块，且没有覆盖其他用户指令。
 8. MCP Server 可以幂等确保守护进程已启动；守护进程启动失败时 MCP 仍能完成初始化并返回明确诊断。
@@ -142,8 +142,14 @@ Windows 原生 Agent、Codex Web/Cloud、没有 systemd 用户实例的环境不
 ```markdown
 <!-- agent-notifier:rules:start -->
 除用户硬性打断外，在任何正常交还控制权、任务完成、任务阻塞、计划决策或命令完成前，
-调用 ntfy_send。正常完成、等待输入、普通暂停或非致命异常使用优先级 4；严重失败、
-需要立即人工干预或不可恢复阻塞使用优先级 5。通知失败不得掩盖原任务结果，但必须在最终答复中说明。
+调用 ntfy_send。对于需要两个或以上有意义、可独立验证小点的复杂普通任务，以及所有显式 goal 任务，
+每完成并验证一个小点后、开始下一小点前，调用 ntfy_send 报告已完成内容、验证结果和下一步；
+不要把单个命令、Tool Call、文件读取或局部编辑当作小点，也不要在任务结束后成批补发。
+每次由 Agent 执行的 git commit 成功后（包括 --amend），立即调用 ntfy_send，正文包含短提交哈希和提交主题；
+每个成功提交至少对应一次通知，不得合并多个提交后延迟汇总。如果提交恰好完成一个小点，或最后一个小点恰好完成整个任务，
+可用一条明确涵盖所有相关状态的通知避免重复推送。小点完成、提交成功、正常完成、等待输入、普通暂停或非致命异常使用优先级 4；
+严重失败、需要立即人工干预或不可恢复阻塞使用优先级 5。通知失败不得掩盖原任务结果，也不得为重发通知而重复执行 git commit，
+但必须在最终答复中说明通知失败。
 <!-- agent-notifier:rules:end -->
 ```
 
@@ -164,7 +170,7 @@ codex mcp list
 - 本地健康检查端点可访问；
 - MCP `tools/list` 只暴露 `ntfy_send`，其输入 Schema 正确；
 - Codex OTel endpoint、协议和 `log_user_prompt = false` 已落盘；
-- 全局 Agent 指令写入了 Codex 实际读取的文件且只出现一次；
+- 全局 Agent 指令写入了 Codex 实际读取的文件且只出现一次，规则同时覆盖任务交还、长程小点进度和 `git commit` 成功三类事件；
 - 向用户配置的话题发送一条真实测试通知，并解析 ntfy JSON 响应确认存在 `event = "message"` 和消息 ID；仅检查进程退出码不算成功；
 - 工作区和用户配置中不存在明文密码、Token 或意外产生的临时文件。
 

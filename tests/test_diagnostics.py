@@ -28,7 +28,9 @@ approval_mode = "approve"
         encoding="utf-8",
     )
     (codex_home / "AGENTS.md").write_text(
-        f"other instructions\n{RULES_START}\n调用 ntfy_send 并选择优先级。\n{RULES_END}\n",
+        f"other instructions\n{RULES_START}\n"
+        "调用 ntfy_send 并选择优先级；长程 goal 每完成一个小点通知，"
+        f"每次 git commit 成功后通知。\n{RULES_END}\n",
         encoding="utf-8",
     )
     monkeypatch.setattr("agent_notifier.diagnostics.shutil.which", lambda name: f"/bin/{name}")
@@ -67,3 +69,26 @@ def test_override_file_is_the_effective_global_instruction_file(tmp_path: Path, 
     rules = next(item for item in checks if item["name"] == "notification_rules")
     assert rules["ok"] is False
     assert "AGENTS.override.md" in rules["detail"]
+
+
+def test_doctor_rejects_legacy_notification_rules(tmp_path: Path, monkeypatch) -> None:
+    app_config = tmp_path / "config.toml"
+    codex_home = tmp_path / "codex"
+    codex_home.mkdir()
+    save_config(parse_config({}), app_config)
+    (codex_home / "config.toml").write_text("", encoding="utf-8")
+    (codex_home / "AGENTS.md").write_text(
+        "规则块外提到长程小点、goal 和 git commit。\n"
+        f"{RULES_START}\n调用 ntfy_send 并设置优先级。\n{RULES_END}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("agent_notifier.diagnostics.shutil.which", lambda name: None)
+
+    checks = doctor_checks(
+        {"AGENT_NOTIFIER_CONFIG": str(app_config), "CODEX_HOME": str(codex_home)}
+    )
+
+    rules = next(item for item in checks if item["name"] == "notification_rules")
+    assert rules["ok"] is False
+    assert "长程小点" in rules["detail"]
+    assert "git commit" in rules["detail"]
