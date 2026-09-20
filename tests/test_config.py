@@ -37,6 +37,8 @@ def test_relative_override_is_rejected() -> None:
         ({"topics": {"same": "a"}, "groups": {"same": []}}, "重名"),
         ({"groups": {"a": ["missing"]}}, "不存在"),
         ({"topics": {"bad name": "a"}}, "必须由"),
+        ({"server": {"base_url": "https://user:secret@example.test"}}, "用户名或密码"),
+        ({"server": {"base_url": "https://example.test?q=secret"}}, "查询参数"),
     ],
 )
 def test_invalid_config_is_rejected(raw: dict, message: str) -> None:
@@ -48,6 +50,15 @@ def test_all_groups_are_checked_for_cycles() -> None:
     raw = {"groups": {"a": ["b"], "b": ["c"], "c": ["a"]}}
     with pytest.raises(ConfigError, match=r"a -> b -> c -> a"):
         parse_config(raw)
+
+
+@pytest.mark.parametrize(
+    "groups, path",
+    [({"self": ["self"]}, "self -> self"), ({"a": ["b"], "b": ["a"]}, "a -> b -> a")],
+)
+def test_self_and_direct_cycles_report_complete_path(groups, path) -> None:
+    with pytest.raises(ConfigError, match=path):
+        parse_config({"groups": groups})
 
 
 def test_save_and_load_round_trip(tmp_path: Path) -> None:

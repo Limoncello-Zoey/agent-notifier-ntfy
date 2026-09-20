@@ -23,6 +23,8 @@ def test_normalizes_whitespace_defaults_and_tags() -> None:
         ({"emoji": "x", "title": "t" * 256, "message": "m"}, "256"),
         ({"emoji": "x", "title": "t", "message": "m" * 3501}, "3500"),
         ({"emoji": "x", "title": "t", "message": "m", "tags": ["a,b"]}, "逗号"),
+        ({"emoji": "✅", "title": "✅ Done", "message": "m"}, "重复"),
+        ({"emoji": "x", "title": "t", "message": "m", "tags": {"a"}}, "数组"),
     ],
 )
 def test_rejects_invalid_notification(kwargs: dict, match: str) -> None:

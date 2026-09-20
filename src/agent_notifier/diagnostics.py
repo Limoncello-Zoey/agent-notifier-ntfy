@@ -51,7 +51,7 @@ def doctor_checks(environ: Mapping[str, str] | None = None) -> list[dict[str, An
         checks.append(_check("otel", False, str(exc)))
     else:
         checks.append(_mcp_check(codex_config, codex_config_path))
-        checks.append(_otel_check(codex_config, codex_config_path))
+        checks.append(_otel_check(codex_config, codex_config_path, config))
     checks.append(_rules_check(codex_home))
     return checks
 
@@ -109,15 +109,19 @@ def _mcp_check(raw: Mapping[str, Any], path: Path) -> dict[str, Any]:
     return _check("mcp", ok, detail)
 
 
-def _otel_check(raw: Mapping[str, Any], path: Path) -> dict[str, Any]:
+def _otel_check(raw: Mapping[str, Any], path: Path, config: Config | None) -> dict[str, Any]:
     otel = raw.get("otel")
     exporter = otel.get("exporter") if isinstance(otel, dict) else None
     http = exporter.get("otlp-http") if isinstance(exporter, dict) else None
+    host = config.monitor.listen_host if config is not None else "127.0.0.1"
+    port = config.monitor.listen_port if config is not None else 4318
+    rendered_host = f"[{host}]" if ":" in host else host
+    expected_endpoint = f"http://{rendered_host}:{port}/v1/logs"
     ok = (
         isinstance(otel, dict)
         and otel.get("log_user_prompt") is False
         and isinstance(http, dict)
-        and http.get("endpoint") == "http://127.0.0.1:4318/v1/logs"
+        and http.get("endpoint") == expected_endpoint
         and http.get("protocol") == "json"
     )
     detail = str(path) if ok else "OTel 必须使用本地 OTLP/HTTP JSON，且 log_user_prompt=false"

@@ -32,6 +32,11 @@ def test_empty_group_is_valid() -> None:
     assert resolve_target(sample_config(), "silent") == ("silent", [])
 
 
+def test_nested_empty_groups_resolve_to_no_topics() -> None:
+    config = replace(Config(), groups={"empty": [], "nested": ["empty"]})
+    assert resolve_target(config, "nested") == ("nested", [])
+
+
 def test_unknown_target_never_falls_back_to_public_topic_name() -> None:
     with pytest.raises(ResolutionError, match="目标不存在"):
         resolve_target(sample_config(), "typo")

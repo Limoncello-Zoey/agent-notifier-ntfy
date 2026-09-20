@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import tempfile
 from typing import Any, Mapping
+from urllib.parse import urlsplit
 
 try:
     import tomllib
@@ -111,6 +112,13 @@ def parse_config(raw: Mapping[str, Any]) -> Config:
     base_url = base_url.strip().rstrip("/")
     if not (base_url.startswith("https://") or base_url.startswith("http://")):
         raise ConfigError("server.base_url 必须使用 http:// 或 https://")
+    parsed_url = urlsplit(base_url)
+    if not parsed_url.hostname:
+        raise ConfigError("server.base_url 必须包含主机名")
+    if parsed_url.username is not None or parsed_url.password is not None:
+        raise ConfigError("server.base_url 第一版不支持内嵌用户名或密码")
+    if parsed_url.query or parsed_url.fragment:
+        raise ConfigError("server.base_url 不能包含查询参数或片段")
 
     target = defaults_raw.get("target")
     if target is not None:

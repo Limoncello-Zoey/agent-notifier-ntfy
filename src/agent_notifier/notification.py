@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Iterable, Mapping
+from typing import Any, Mapping
 
 from .config import Config
 from .errors import NotificationError
@@ -53,6 +53,10 @@ def normalize_notification(
     normalized_tags = _normalize_tags(tags)
 
     rendered = f"{normalized_emoji} {normalized_title}"
+    if normalized_title == normalized_emoji or normalized_title.startswith(
+        normalized_emoji + " "
+    ):
+        raise NotificationError("title 不得重复包含 emoji 前缀")
     if len(rendered.encode("utf-8")) > 256:
         raise NotificationError("添加 emoji 后的 title 不能超过 256 UTF-8 字节")
     if len(normalized_message.encode("utf-8")) > 3500:
@@ -96,7 +100,7 @@ def _optional_text(value: object, name: str) -> str | None:
 def _normalize_tags(value: object) -> tuple[str, ...]:
     if value is None:
         return ()
-    if isinstance(value, str) or not isinstance(value, Iterable):
+    if not isinstance(value, (list, tuple)):
         raise NotificationError("tags 必须是字符串数组")
     result: list[str] = []
     seen: set[str] = set()

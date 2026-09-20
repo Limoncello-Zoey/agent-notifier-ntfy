@@ -91,6 +91,57 @@ def test_invalid_success_json_is_not_accepted() -> None:
     assert "event=message" in result.results[0].error
 
 
+def test_all_topics_can_fail_without_fail_fast() -> None:
+    calls = []
+
+    def runner(*args, **kwargs):
+        calls.append(args[0])
+        return completed(2, {"http": 400, "error": "rejected"})
+
+    result = NtfySender(make_config(), executable="ntfy", runner=runner).send(note())
+    assert result.status == "failed"
+    assert result.sent == 0 and result.failed == 2
+    assert len(calls) == 2
+
+
+def test_timeout_is_bounded_and_remaining_topics_continue() -> None:
+    calls = 0
+
+    def runner(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+        return completed(0, {"event": "message", "id": "second"})
+
+    result = NtfySender(make_config(), executable="ntfy", runner=runner, timeout=1).send(note())
+    assert result.status == "partial_failure"
+    assert "超过 1 秒" in result.results[0].error
+    assert result.results[1].message_id == "second"
+
+
+def test_special_characters_remain_single_arguments() -> None:
+    observed = []
+    item = normalize_notification(
+        make_config(),
+        target="a",
+        emoji="🧪",
+        title="$(touch nope)",
+        message="hello; echo unsafe\n中文",
+        tags=["one", "two"],
+    )
+    sender = NtfySender(
+        make_config(),
+        executable="ntfy",
+        runner=lambda command, **kwargs: observed.append(command)
+        or completed(0, {"event": "message", "id": "ok"}),
+    )
+    sender.send(item)
+    assert observed[0][-1] == "hello; echo unsafe\n中文"
+    assert observed[0][3] == "🧪 $(touch nope)"
+    assert observed[0][7] == "one,two"
+
+
 def test_missing_executable_is_actionable(monkeypatch) -> None:
     monkeypatch.setattr("agent_notifier.sender.shutil.which", lambda value: None)
     with pytest.raises(NotificationError, match="PATH"):
