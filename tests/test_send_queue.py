@@ -60,6 +60,41 @@ def test_sender_exception_is_returned_and_worker_continues() -> None:
     assert calls == ["bad", "good"]
 
 
+def test_background_completion_reports_sender_result() -> None:
+    completed = threading.Event()
+    outcomes = []
+    queue = SendQueue(success)
+
+    assert queue.submit_background(
+        note("background"),
+        lambda result, error: (outcomes.append((result, error)), completed.set()),
+    )
+    assert completed.wait(1)
+    queue.shutdown()
+
+    assert outcomes[0][0].status == "skipped"
+    assert outcomes[0][1] is None
+
+
+def test_background_completion_reports_sender_exception() -> None:
+    completed = threading.Event()
+    outcomes = []
+
+    def fail(item):
+        raise RuntimeError("boom")
+
+    queue = SendQueue(fail)
+    assert queue.submit_background(
+        note("background"),
+        lambda result, error: (outcomes.append((result, error)), completed.set()),
+    )
+    assert completed.wait(1)
+    queue.shutdown()
+
+    assert outcomes[0][0] is None
+    assert isinstance(outcomes[0][1], RuntimeError)
+
+
 def test_wait_timeout_is_explicit() -> None:
     release = threading.Event()
 

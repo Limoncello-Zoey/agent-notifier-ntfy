@@ -87,12 +87,17 @@ def _decode_record(record: object, resource_attrs: Mapping[str, Any]) -> Transpo
     status = _first_int(attrs, "status", "status_code", "http.status_code", "http.response.status_code")
     explicit_success = _first_bool(attrs, "success", "ok")
     error = _first_text(attrs, "error.message", "error_message", "error", "exception.message")
+    event_kind = _first_text(attrs, "event.kind", "event_kind", "kind")
     if explicit_success is not None:
         success = explicit_success
     elif status is not None:
         success = 100 <= status < 400
     elif error:
         success = False
+    elif name == "codex.sse_event" and event_kind is not None:
+        # Current Codex success records carry event.kind and duration, but no
+        # explicit success flag. Failed records carry error.message.
+        success = True
     else:
         # An incomplete record provides no reliable failure signal.
         return None

@@ -156,7 +156,8 @@ def _handler_factory(runtime: DaemonRuntime) -> type[BaseHTTPRequestHandler]:
                 LOGGER.warning("拒绝无效 OTLP 请求: %s", _bounded(str(exc)))
                 self._json(HTTPStatus.BAD_REQUEST, {"error": _bounded(str(exc))})
             else:
-                self._json(HTTPStatus.ACCEPTED, {"accepted": len(events)})
+                # OTLP/HTTP full success is an empty ExportLogsServiceResponse.
+                self._json(HTTPStatus.OK, {})
 
         def _read_json(self, maximum: int) -> Any:
             media_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()

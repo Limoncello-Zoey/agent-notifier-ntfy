@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import logging
 import re
 import threading
 import time
@@ -12,6 +13,10 @@ from typing import Callable
 from .config import Config
 from .notification import Notification, normalize_notification
 from .otlp_receiver import TransportEvent
+from .sender import SendResult
+
+
+LOGGER = logging.getLogger("agent_notifier.failure_monitor")
 
 
 TEMPLATES = {
@@ -50,7 +55,10 @@ class FailureMonitor:
     def __init__(
         self,
         config: Config,
-        enqueue: Callable[[Notification], bool],
+        enqueue: Callable[
+            [Notification, Callable[[SendResult | None, BaseException | None], None]],
+            bool,
+        ],
         *,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -59,7 +67,8 @@ class FailureMonitor:
         self.clock = clock
         self._pending: dict[tuple[str, str], _Pending] = {}
         self._dedupe: dict[tuple[str, str, str], float] = {}
-        self._lock = threading.Lock()
+        self._inflight: dict[tuple[str, str], object] = {}
+        self._lock = threading.RLock()
 
     def ingest(self, event: TransportEvent, now: float | None = None) -> None:
         timestamp = self.clock() if now is None else now
@@ -85,6 +94,8 @@ class FailureMonitor:
         with self._lock:
             self._prune(timestamp)
             for key, pending in list(self._pending.items()):
+                if key in self._inflight:
+                    continue
                 if timestamp - pending.first_seen < self.config.monitor.failure_grace_seconds:
                     continue
                 dedupe_key = (*key, pending.fingerprint)
@@ -93,12 +104,17 @@ class FailureMonitor:
                     del self._pending[key]
                     continue
                 notification = build_notification(self.config, pending.event, pending.category)
-                # enqueue is deliberately non-blocking. Keeping it under the state lock
-                # makes recovery and alert publication atomic with respect to each other.
-                if self.enqueue(notification):
-                    del self._pending[key]
-                    self._dedupe[dedupe_key] = timestamp
+                token = object()
+                self._inflight[key] = token
+                callback = lambda result, error, key=key, token=token, pending=pending: (
+                    self._delivery_complete(key, token, pending, result, error)
+                )
+                # Enqueue remains non-blocking; completion decides whether the
+                # alert was actually delivered and may be de-duplicated.
+                if self.enqueue(notification, callback):
                     enqueued += 1
+                elif self._inflight.get(key) is token:
+                    del self._inflight[key]
         return enqueued
 
     @property
@@ -111,6 +127,52 @@ class FailureMonitor:
         for key, sent_at in list(self._dedupe.items()):
             if now - sent_at >= window:
                 del self._dedupe[key]
+
+    def _delivery_complete(
+        self,
+        key: tuple[str, str],
+        token: object,
+        submitted: _Pending,
+        result: SendResult | None,
+        error: BaseException | None,
+    ) -> None:
+        delivered = (
+            error is None
+            and result is not None
+            and result.sent > 0
+            and result.status in {"success", "partial_failure"}
+        )
+        timestamp = self.clock()
+        with self._lock:
+            if self._inflight.get(key) is token:
+                del self._inflight[key]
+            pending = self._pending.get(key)
+            if pending is submitted and delivered:
+                del self._pending[key]
+                self._dedupe[(*key, submitted.fingerprint)] = timestamp
+            elif pending is submitted:
+                # Keep the alert pending, but avoid a tight retry loop while the
+                # notification destination is unavailable.
+                pending.first_seen = timestamp
+
+        if error is not None:
+            LOGGER.error("后台模型故障通知发送失败: %s", _bounded(str(error)))
+        elif not delivered:
+            status = result.status if result is not None else "missing_result"
+            sent = result.sent if result is not None else 0
+            failed = result.failed if result is not None else 0
+            LOGGER.error(
+                "后台模型故障通知未送达: status=%s sent=%s failed=%s",
+                status,
+                sent,
+                failed,
+            )
+        elif result is not None and result.status == "partial_failure":
+            LOGGER.warning(
+                "后台模型故障通知部分送达: sent=%s failed=%s",
+                result.sent,
+                result.failed,
+            )
 
 
 def classify_failure(event: TransportEvent) -> str:
@@ -162,3 +224,7 @@ def _sanitize(value: str, limit: int) -> str:
 def _fingerprint(category: str, event: TransportEvent) -> str:
     stable = f"{category}|{event.status or ''}|{_sanitize(event.error or '', 240)}"
     return hashlib.sha256(stable.encode("utf-8")).hexdigest()[:16]
+
+
+def _bounded(value: str) -> str:
+    return " ".join(value.split())[:500]

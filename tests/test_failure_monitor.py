@@ -5,6 +5,7 @@ import pytest
 from agent_notifier.config import Config, DefaultsConfig, MonitorConfig
 from agent_notifier.failure_monitor import FailureMonitor, build_notification, classify_failure
 from agent_notifier.otlp_receiver import TransportEvent
+from agent_notifier.sender import SendResult
 
 
 def config() -> Config:
@@ -31,6 +32,19 @@ def event(**updates) -> TransportEvent:
     return TransportEvent(**values)
 
 
+def delivered() -> SendResult:
+    return SendResult("success", "alerts", ("real-alerts",), 1, 0, ())
+
+
+def immediate_enqueue(sent):
+    def enqueue(item, complete):
+        sent.append(item)
+        complete(delivered(), None)
+        return True
+
+    return enqueue
+
+
 @pytest.mark.parametrize(
     "updates, expected",
     [
@@ -49,7 +63,7 @@ def test_failure_classification_order(updates, expected) -> None:
 
 def test_grace_window_and_recovery_cancellation() -> None:
     sent = []
-    monitor = FailureMonitor(config(), lambda item: sent.append(item) or True)
+    monitor = FailureMonitor(config(), immediate_enqueue(sent))
     monitor.ingest(event(), now=0)
     assert monitor.tick(now=9.9) == 0
     monitor.ingest(event(success=True, status=200, error=None), now=10)
@@ -59,7 +73,7 @@ def test_grace_window_and_recovery_cancellation() -> None:
 
 def test_failure_details_refresh_without_extending_initial_grace() -> None:
     sent = []
-    monitor = FailureMonitor(config(), lambda item: sent.append(item) or True)
+    monitor = FailureMonitor(config(), immediate_enqueue(sent))
     monitor.ingest(event(error="first"), now=0)
     monitor.ingest(event(error="second"), now=5)
     assert monitor.tick(now=10) == 1
@@ -68,7 +82,7 @@ def test_failure_details_refresh_without_extending_initial_grace() -> None:
 
 def test_sessions_are_independent_and_alerts_use_fixed_template() -> None:
     sent = []
-    monitor = FailureMonitor(config(), lambda item: sent.append(item) or True)
+    monitor = FailureMonitor(config(), immediate_enqueue(sent))
     monitor.ingest(event(session_id="one", status=429), now=0)
     monitor.ingest(event(session_id="two", status=429), now=0)
     assert monitor.tick(now=10) == 2
@@ -78,7 +92,7 @@ def test_sessions_are_independent_and_alerts_use_fixed_template() -> None:
 
 def test_duplicate_is_suppressed_but_recovery_allows_realert() -> None:
     sent = []
-    monitor = FailureMonitor(config(), lambda item: sent.append(item) or True)
+    monitor = FailureMonitor(config(), immediate_enqueue(sent))
     monitor.ingest(event(), now=0)
     assert monitor.tick(now=10) == 1
     monitor.ingest(event(), now=11)
@@ -93,8 +107,10 @@ def test_full_send_queue_keeps_due_alert_for_retry() -> None:
     accept = False
     sent = []
 
-    def enqueue(item):
+    def enqueue(item, complete):
         sent.append(item)
+        if accept:
+            complete(delivered(), None)
         return accept
 
     monitor = FailureMonitor(config(), enqueue)
@@ -104,6 +120,63 @@ def test_full_send_queue_keeps_due_alert_for_retry() -> None:
     accept = True
     assert monitor.tick(now=11) == 1
     assert monitor.pending_count == 0
+
+
+def test_delivery_failure_is_logged_and_retried_after_grace(caplog) -> None:
+    callbacks = []
+    sent = []
+    current_time = [0.0]
+
+    def enqueue(item, complete):
+        sent.append(item)
+        callbacks.append(complete)
+        return True
+
+    monitor = FailureMonitor(config(), enqueue, clock=lambda: current_time[0])
+    monitor.ingest(event(), now=0)
+    current_time[0] = 10
+    assert monitor.tick(now=10) == 1
+    assert monitor.pending_count == 1
+
+    callbacks.pop()(None, RuntimeError("ntfy unavailable"))
+
+    assert "后台模型故障通知发送失败" in caplog.text
+    assert monitor.tick(now=19.9) == 0
+    assert monitor.tick(now=20) == 1
+    assert len(sent) == 2
+
+
+def test_delivery_success_marks_alert_complete() -> None:
+    callbacks = []
+    monitor = FailureMonitor(
+        config(),
+        lambda item, complete: callbacks.append(complete) or True,
+        clock=lambda: 10,
+    )
+    monitor.ingest(event(), now=0)
+
+    assert monitor.tick(now=10) == 1
+    assert monitor.pending_count == 1
+    callbacks.pop()(delivered(), None)
+
+    assert monitor.pending_count == 0
+
+
+def test_old_delivery_cannot_clear_a_new_failure_with_same_fingerprint() -> None:
+    callbacks = []
+    monitor = FailureMonitor(
+        config(),
+        lambda item, complete: callbacks.append(complete) or True,
+        clock=lambda: 11,
+    )
+    monitor.ingest(event(), now=0)
+    assert monitor.tick(now=10) == 1
+
+    monitor.ingest(event(success=True, status=200, error=None), now=10.5)
+    monitor.ingest(event(), now=11)
+    callbacks.pop()(delivered(), None)
+
+    assert monitor.pending_count == 1
 
 
 def test_notification_redacts_and_bounds_secrets() -> None:
@@ -137,9 +210,15 @@ def test_missing_dynamic_fields_do_not_create_empty_labels() -> None:
 
 def test_dedupe_record_expires_and_allows_a_later_failure() -> None:
     sent = []
-    monitor = FailureMonitor(config(), lambda item: sent.append(item) or True)
+    current_time = [0.0]
+    monitor = FailureMonitor(
+        config(), immediate_enqueue(sent), clock=lambda: current_time[0]
+    )
     monitor.ingest(event(), now=0)
+    current_time[0] = 10
     assert monitor.tick(now=10) == 1
+    current_time[0] = 41
     monitor.ingest(event(), now=41)
+    current_time[0] = 51
     assert monitor.tick(now=51) == 1
     assert len(sent) == 2

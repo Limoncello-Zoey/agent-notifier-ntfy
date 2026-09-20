@@ -74,6 +74,22 @@ def test_ignores_supported_record_without_failure_or_success_signal() -> None:
     assert decode_otlp_logs(envelope([record])) == []
 
 
+def test_sse_event_kind_without_explicit_success_is_a_recovery() -> None:
+    record = {
+        "attributes": [
+            attr("event.name", "codex.sse_event"),
+            attr("conversation.id", "c"),
+            attr("event.kind", "response.completed"),
+            attr("duration_ms", 12),
+        ],
+    }
+
+    event = decode_otlp_logs(envelope([record]))[0]
+
+    assert event.transport == "sse"
+    assert event.success is True
+
+
 @pytest.mark.parametrize("payload", [None, [], {}, {"resourceLogs": {}}])
 def test_rejects_invalid_envelope(payload) -> None:
     with pytest.raises(OtlpDecodeError):

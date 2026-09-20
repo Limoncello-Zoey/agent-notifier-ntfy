@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import logging
 from queue import Full, Queue
 import threading
 from typing import Callable
@@ -10,6 +11,9 @@ from typing import Callable
 from .errors import DaemonError
 from .notification import Notification
 from .sender import SendResult
+
+
+LOGGER = logging.getLogger("agent_notifier.send_queue")
 
 
 class QueueFullError(DaemonError):
@@ -20,12 +24,16 @@ class QueueTimeoutError(DaemonError):
     """A queued notification did not finish before the caller deadline."""
 
 
+CompletionCallback = Callable[[SendResult | None, BaseException | None], None]
+
+
 @dataclass(slots=True)
 class _Task:
     notification: Notification
     done: threading.Event = field(default_factory=threading.Event)
     result: SendResult | None = None
     error: BaseException | None = None
+    on_complete: CompletionCallback | None = None
 
 
 class SendQueue:
@@ -65,11 +73,15 @@ class SendQueue:
         assert task.result is not None
         return task.result
 
-    def submit_background(self, notification: Notification) -> bool:
-        """Enqueue a monitor notification without waiting for network delivery."""
+    def submit_background(
+        self,
+        notification: Notification,
+        on_complete: CompletionCallback | None = None,
+    ) -> bool:
+        """Enqueue without blocking and report the eventual delivery outcome."""
         self.start()
         try:
-            self._queue.put_nowait(_Task(notification))
+            self._queue.put_nowait(_Task(notification, on_complete=on_complete))
         except Full:
             return False
         return True
@@ -104,6 +116,11 @@ class SendQueue:
                     task.error = exc
                 finally:
                     task.done.set()
+                    if task.on_complete is not None:
+                        try:
+                            task.on_complete(task.result, task.error)
+                        except Exception:
+                            LOGGER.exception("后台发送完成回调失败")
             finally:
                 self._queue.task_done()
             if self._closed and self._queue.empty():

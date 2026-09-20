@@ -67,8 +67,8 @@ def test_otlp_endpoint_accepts_valid_batch_immediately(running_daemon) -> None:
     runtime, config, _ = running_daemon
     payload = {"resourceLogs": [{"scopeLogs": [{"logRecords": []}]}]}
     with post(config, "/v1/logs", payload) as response:
-        assert response.status == 202
-        assert json.load(response) == {"accepted": 0}
+        assert response.status == 200
+        assert json.load(response) == {}
     assert runtime.monitor.pending_count == 0
 
 
