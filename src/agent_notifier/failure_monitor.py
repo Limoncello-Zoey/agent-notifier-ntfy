@@ -72,16 +72,12 @@ class FailureMonitor:
             category = classify_failure(event)
             fingerprint = _fingerprint(category, event)
             previous = self._pending.get(key)
-            first_seen = (
-                previous.first_seen
-                if previous is not None and previous.fingerprint == fingerprint
-                else timestamp
-            )
+            first_seen = previous.first_seen if previous is not None else timestamp
             self._pending[key] = _Pending(first_seen, event, category, fingerprint)
 
     def tick(self, now: float | None = None) -> int:
         timestamp = self.clock() if now is None else now
-        due: list[tuple[tuple[str, str], _Pending, Notification]] = []
+        enqueued = 0
         with self._lock:
             self._prune(timestamp)
             for key, pending in list(self._pending.items()):
@@ -92,17 +88,12 @@ class FailureMonitor:
                 if previous is not None and timestamp - previous < self.config.monitor.dedupe_window_seconds:
                     del self._pending[key]
                     continue
-                due.append((key, pending, build_notification(self.config, pending.event, pending.category)))
-
-        enqueued = 0
-        for key, pending, notification in due:
-            if not self.enqueue(notification):
-                continue
-            with self._lock:
-                current = self._pending.get(key)
-                if current is pending:
+                notification = build_notification(self.config, pending.event, pending.category)
+                # enqueue is deliberately non-blocking. Keeping it under the state lock
+                # makes recovery and alert publication atomic with respect to each other.
+                if self.enqueue(notification):
                     del self._pending[key]
-                    self._dedupe[(*key, pending.fingerprint)] = timestamp
+                    self._dedupe[dedupe_key] = timestamp
                     enqueued += 1
         return enqueued
 

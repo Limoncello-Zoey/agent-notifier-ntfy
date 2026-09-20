@@ -62,9 +62,7 @@ def test_failure_details_refresh_without_extending_initial_grace() -> None:
     monitor = FailureMonitor(config(), lambda item: sent.append(item) or True)
     monitor.ingest(event(error="first"), now=0)
     monitor.ingest(event(error="second"), now=5)
-    # A changed fingerprint is a distinct final failure and starts a new grace window.
-    assert monitor.tick(now=10) == 0
-    assert monitor.tick(now=15) == 1
+    assert monitor.tick(now=10) == 1
     assert "second" in sent[0].message
 
 

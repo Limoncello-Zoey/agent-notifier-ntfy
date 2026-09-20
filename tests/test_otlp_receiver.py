@@ -66,6 +66,14 @@ def test_ignores_unrelated_and_unattributable_records() -> None:
     assert decode_otlp_logs(envelope(records)) == []
 
 
+def test_ignores_supported_record_without_failure_or_success_signal() -> None:
+    record = {
+        "body": av("codex.api_request"),
+        "attributes": [attr("conversation.id", "c")],
+    }
+    assert decode_otlp_logs(envelope([record])) == []
+
+
 @pytest.mark.parametrize("payload", [None, [], {}, {"resourceLogs": {}}])
 def test_rejects_invalid_envelope(payload) -> None:
     with pytest.raises(OtlpDecodeError):

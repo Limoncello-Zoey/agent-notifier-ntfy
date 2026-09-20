@@ -87,9 +87,15 @@ def _decode_record(record: object, resource_attrs: Mapping[str, Any]) -> Transpo
     status = _first_int(attrs, "status", "status_code", "http.status_code", "http.response.status_code")
     explicit_success = _first_bool(attrs, "success", "ok")
     error = _first_text(attrs, "error.message", "error_message", "error", "exception.message")
-    success = explicit_success if explicit_success is not None else bool(status and 200 <= status < 400)
-    if error and explicit_success is None and status is None:
+    if explicit_success is not None:
+        success = explicit_success
+    elif status is not None:
+        success = 100 <= status < 400
+    elif error:
         success = False
+    else:
+        # An incomplete record provides no reliable failure signal.
+        return None
 
     return TransportEvent(
         name=name,
