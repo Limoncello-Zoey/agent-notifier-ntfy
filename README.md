@@ -103,6 +103,89 @@ Windows 原生 Agent、Codex Web/Cloud、没有 systemd 用户实例的环境不
 
 基于这些事实选择本机最合适的安装方法。可以使用发行版包管理器、Python 虚拟环境或其他本机已有的标准工具，但不得假设某个特定包管理器、虚拟环境管理器或固定绝对路径一定存在。
 
+#### 2.1 缺少 ntfy CLI 时的安装选择
+
+本项目只需要 `ntfy publish` 客户端，不需要运行 ntfy 服务端。若 `command -v ntfy` 失败，先读取
+[`binwiederhier/ntfy`](https://github.com/binwiederhier/ntfy) 的
+[`Releases`](https://github.com/binwiederhier/ntfy/releases) 和
+[官方安装文档](https://docs.ntfy.sh/install/)，再根据本机发行版、包管理器和架构选择一种方式。不得写死 README 当前看到的版本号，也不得执行 `curl | sh`。
+
+先探测，不要根据发行版名称或 CPU 名称猜测：
+
+```bash
+uname -s
+uname -m
+test -r /etc/os-release && sed -n '1,20p' /etc/os-release
+command -v apt-get || command -v dnf || command -v yum || command -v rpm || true
+command -v paru || command -v yay || command -v nix-env || command -v brew || true
+```
+
+优先采用本机已有且适合维护升级的软件源。以下命令是选择提示，不是要求全部执行：
+
+```bash
+# Debian/Ubuntu：官方 ntfy APT 仓库；<DEB_ARCH> 由 dpkg --print-architecture 得到，
+# 官方支持的值为 amd64、armhf、arm64。添加系统软件源前必须按部署规则取得 sudo 授权。
+dpkg --print-architecture
+sudo install -d -m 0755 /etc/apt/keyrings
+sudo curl -fL -o /etc/apt/keyrings/ntfy.gpg https://archive.ntfy.sh/apt/keyring.gpg
+echo "deb [arch=<DEB_ARCH> signed-by=/etc/apt/keyrings/ntfy.gpg] https://archive.ntfy.sh/apt stable main" \
+  | sudo tee /etc/apt/sources.list.d/ntfy.list
+sudo apt-get update
+sudo apt-get install ntfy
+
+# Arch Linux（社区维护的 AUR 二进制包；使用本机已有的一个 AUR helper）
+paru -S ntfysh-bin
+# 或：yay -S ntfysh-bin
+
+# Nix/NixOS（社区维护）
+nix-env -iA ntfy-sh
+
+# 已安装 Homebrew 的 Linux
+brew install ntfy
+```
+
+Fedora/RHEL/CentOS 可从最新 Release 选择与架构匹配的 `.rpm`，再用 `dnf install ./文件.rpm`
+或 `rpm -Uvh ./文件.rpm` 安装。若不应修改系统软件源，或希望完全使用用户权限，则使用下面的
+GitHub Release 通用方案。它先读取 `releases/latest` 元数据，映射本机架构，下载对应 tarball 和
+官方 `checksums.txt`，校验后安装到稳定的用户级目录：
+
+```bash
+NTFY_TMP="$(mktemp -d)"
+curl -fsSL https://api.github.com/repos/binwiederhier/ntfy/releases/latest \
+  -o "$NTFY_TMP/release.json"
+NTFY_VERSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["tag_name"].removeprefix("v"))' "$NTFY_TMP/release.json")"
+
+case "$(uname -m)" in
+  x86_64|amd64) NTFY_ARCH=amd64 ;;
+  aarch64|arm64) NTFY_ARCH=arm64 ;;
+  armv7l|armv7*|armhf) NTFY_ARCH=armv7 ;;
+  armv6l|armv6*) NTFY_ARCH=armv6 ;;
+  *) echo "ntfy 没有适配该架构的官方 Linux Release: $(uname -m)" >&2; exit 1 ;;
+esac
+
+NTFY_ASSET="ntfy_${NTFY_VERSION}_linux_${NTFY_ARCH}.tar.gz"
+NTFY_BASE="https://github.com/binwiederhier/ntfy/releases/download/v${NTFY_VERSION}"
+curl -fL "$NTFY_BASE/$NTFY_ASSET" -o "$NTFY_TMP/$NTFY_ASSET"
+curl -fL "$NTFY_BASE/checksums.txt" -o "$NTFY_TMP/checksums.txt"
+(cd "$NTFY_TMP" && sha256sum --check --ignore-missing checksums.txt)
+tar -xzf "$NTFY_TMP/$NTFY_ASSET" -C "$NTFY_TMP"
+install -Dm755 "$NTFY_TMP/ntfy_${NTFY_VERSION}_linux_${NTFY_ARCH}/ntfy" \
+  "$HOME/.local/bin/ntfy"
+```
+
+安装后必须从将启动 `agent-notifier.service` 的同一用户环境验证实际路径和基本可执行性：
+
+```bash
+command -v ntfy
+ntfy --help
+agent-notifier doctor --json
+```
+
+如果 `~/.local/bin` 不在 systemd 用户管理器的 PATH 中，应为 `agent-notifier.service` 设置明确的
+`Environment=PATH=...`，或让服务使用探测到的稳定路径；不得依赖交互式 Shell 的临时 PATH。
+使用 deb/rpm 安装可能同时安装 `ntfy.service`。本项目向远程 `ntfy.sh` 发布消息，不需要启用它；
+若确认它不是用户已有的自托管服务，应保持禁用，不能为了获得 CLI 而启动 ntfy 服务端。
+
 ### 3. 安全与决策规则
 
 1. 先完整阅读本 README 和 `docs/DESIGN.md`，再制定并执行部署方案。
