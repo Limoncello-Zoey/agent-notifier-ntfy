@@ -43,9 +43,10 @@ Codex OTel ──OTLP/HTTP JSON──────────────┤
 项目建议结构：
 
 ```text
-agent_notifier/
-├── DESIGN.md
+agent-notifier-ntfy/
 ├── README.md
+├── docs/
+│   └── DESIGN.md
 ├── pyproject.toml
 ├── src/agent_notifier/
 │   ├── __init__.py
@@ -68,13 +69,15 @@ agent_notifier/
     └── test_failure_monitor.py
 ```
 
+README 采用 Agent-first 布局：最前方依次提供用户可直接转发给 Agent 的一句话安装指令、CLI 配置入口和配置文件位置，随后提供供执行部署的 Agent 读取的自适应部署指南。项目运行代码未实现前必须明确标注设计阶段，不得展示无法执行的命令为已可用功能。
+
 ## 3. 运行生命周期
 
 系统包含两个生命周期彼此独立的进程。
 
 ### 3.1 Agent 环内：STDIO MCP
 
-1. Codex 启动或建立 MCP 连接时，按配置启动 `mcp_server.py` 本地进程。
+1. Codex 启动或建立 MCP 连接时，按配置通过 `agent-notifier mcp` 启动本地 STDIO MCP 进程。
 2. MCP Server 在 Codex 主机存活期间等待 Tool Call，空闲时不执行发送逻辑。
 3. Agent 调用 `ntfy_send` 后，MCP Server 将发送请求提交到 `agent-notifierd` 的 FIFO 待发送消息池，并等待该请求的最终结果。
 4. 守护进程中的单一发送 Worker 解析目标，并为每个最终话题执行一次 `ntfy publish`；每个 `ntfy publish` 都是短生命周期子进程，发送完成即退出。
@@ -105,6 +108,28 @@ exporter = { otlp-http = {
 ```
 
 本机的 `ntfy.service` 不参与该流程，无需启用。它只用于自托管 ntfy 服务端；本项目使用远程 `ntfy.sh`。
+
+### 3.3 Agent 驱动的自适应部署
+
+目标使用方式不是让用户复制一组 Shell 命令，也不是由项目提供一个假设所有机器环境相同的整体安装器。用户只需把 Git 地址和可选的 ntfy 话题交给本机 Agent；Agent 克隆仓库、阅读 README 中的部署提示，探测本机环境，并持续执行到部署和验收完成。
+
+项目负责定义稳定的应用接口和目标状态：CLI 命令、配置格式、`agent-notifier mcp`、`agent-notifier daemon`、MCP Schema、OTel 端点及验收行为。部署 Agent 负责根据当前操作系统、架构、包管理器、Python 环境、Codex 配置和用户目录约定选择具体命令与安装路径。
+
+部署 Agent 必须完成：
+
+1. 只读探测 Linux/WSL2、架构、Python、Codex CLI、`systemd --user`、`ntfy` CLI、XDG 路径、`CODEX_HOME` 和现有配置；不支持的平台明确失败。
+2. 选择适合本机的用户级 Python 安装方式，提供稳定 CLI 入口，且运行时不依赖克隆目录继续存在。
+3. 初始化或无损合并应用配置。
+4. 注册并启动单实例用户级 `agent-notifier.service`，禁止通过裸后台进程实现常驻。
+5. 幂等注册并启用 `agent-notifier` STDIO MCP；只启用 `ntfy_send` 并将其 `approval_mode` 设为 `approve`。
+6. 无损更新 Codex 用户级 `config.toml` 的 OTel 配置；修改前创建带时间戳的备份。
+7. 在 Codex 实际读取的全局 `AGENTS.md` 或 `AGENTS.override.md` 中维护带起止标记的通知规则块，保留其他用户指令。
+8. 执行 CLI、配置、systemd、MCP Schema、OTel、Agent 指令和真实 ntfy 消息的端到端验收。
+9. 输出结构化部署摘要、实际路径、备份位置以及 Codex 重启提示。
+
+部署过程必须幂等。系统包安装是唯一允许触发 `sudo` 的步骤；程序、配置、MCP 和守护进程均使用用户权限。现有 OTel 或全局 Agent 配置无法无损合并时不得静默覆盖，应返回明确冲突并由执行部署的 Agent 请求用户决策。
+
+Codex 在启动时构建 MCP Tool 目录并读取全局 Agent 指令，因此当前执行部署的会话无法热加载新 Tool。守护进程在部署后立即可用；MCP 和通知触发规则从下一次 Codex 会话生效。CLI、IDE 扩展和 ChatGPT 桌面版分别需要新开会话、Restart extension 或 Restart MCP。
 
 ## 4. 配置设计
 
@@ -308,6 +333,14 @@ RestartSec=3
 [Install]
 WantedBy=default.target
 ```
+
+### 6.7 MCP Server 入口
+
+```bash
+agent-notifier mcp
+```
+
+该命令以前台 STDIO 模式运行 MCP Server，stdout 只用于 JSON-RPC，诊断信息只写入 stderr。Codex MCP 注册应指向这个稳定的已安装 CLI 入口，不得指向源码仓库中的 Python 文件，确保克隆目录被移动或删除后仍能启动。
 
 ## 7. 统一消息模型与 MCP Tool 接口
 
@@ -640,6 +673,16 @@ MCP Tool 只提供“发送通知”的能力，不负责判断 Agent 何时停�
 - HTTP `401/403/429/5xx`、连接失败、SSE/WebSocket 中断和未知传输错误均选择正确的固定模板。
 - 同一 OTel 事件最多选择一个环外模板，动态字段缺失时正文不产生空标签行。
 
+### 12.6 部署验收场景
+
+- 在不同的受支持 Linux/WSL2 环境中，部署 Agent 能先探测差异并选择适合本机的安装方式，不依赖固定包管理器或绝对路径。
+- 对同一目标状态连续部署两次，配置块、MCP 条目、systemd 服务和全局 Agent 指令均不重复。
+- 预置包含其他字段的 Codex 配置和全局 Agent 指令，部署后无关内容保持不变并生成可识别的备份。
+- 预置无法无损合并的 OTel 配置时明确停止，不覆盖原配置，也不伪造部署成功。
+- 在缺少 ntfy 话题、不支持的平台、`systemd --user` 不可用和系统依赖缺失时返回可操作诊断。
+- 部署完成后的 `agent-notifier doctor --json` 能逐项报告 CLI、配置、daemon、MCP、OTel 和通知规则状态。
+- 从任意目录启动新 Codex 会话时都能发现 `agent-notifier` MCP 和全局通知规则，不依赖原克隆目录。
+
 ## 13. 完成标准
 
 - 用户可以通过 CLI 或直接编辑 TOML 管理话题和递归话题组。
@@ -651,6 +694,9 @@ MCP Tool 只提供“发送通知”的能力，不负责判断 Agent 何时停�
 - Agent 能继续提供带任务语义的环内通知；后台守护进程仅兜底模型 API 与响应流故障。
 - 单话题、话题组和空话题组在同一接口下行为明确。
 - MCP Server 随 Codex 生命周期运行；`agent-notifierd` 作为独立 `systemd --user` 服务运行。
+- 用户只需把 Git 地址和必要的 ntfy 话题交给本机 Agent；Agent 可依据 README 的目标状态和约束，自行适配本机环境并完成部署与验收。
+- README 最前方提供一句话安装方式、CLI 配置入口和配置文件位置，并明确当前会话无法热加载新 MCP 的重启边界。
+- 部署过程幂等、保留无关用户配置、为被修改文件创建备份，除系统包安装外不需要 root 权限。
 - 不依赖 Codex PID、包装命令、心跳、App Server 代理或 transcript 解析。
 - 本机 `ntfy.service` 保持禁用也能正常发送到 `ntfy.sh`。
 - 自动化测试不依赖公网；真实 ntfy.sh 仅用于最终人工验收。
