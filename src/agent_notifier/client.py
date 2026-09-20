@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
+import time
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -51,6 +54,37 @@ def notify_daemon(config: Config, notification: Notification) -> SendResult:
 def daemon_health(config: Config, timeout: float = 2.0) -> dict[str, Any]:
     request = Request(daemon_url(config, "/health"), method="GET")
     return _open_json(request, timeout)
+
+
+def ensure_daemon(config: Config) -> tuple[bool, str]:
+    """Idempotently ask the user service manager to start the daemon."""
+    try:
+        daemon_health(config)
+        return True, "守护进程已运行"
+    except DaemonError as initial_error:
+        systemctl = shutil.which("systemctl")
+        if not systemctl:
+            return False, f"守护进程不可用，且找不到 systemctl: {initial_error}"
+        try:
+            completed = subprocess.run(
+                [systemctl, "--user", "start", "agent-notifier.service"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return False, f"启动 agent-notifier.service 失败: {exc}"
+        if completed.returncode != 0:
+            detail = " ".join((completed.stderr or completed.stdout).split())[:500]
+            return False, f"启动 agent-notifier.service 失败: {detail or completed.returncode}"
+        for _ in range(10):
+            try:
+                daemon_health(config, timeout=1)
+                return True, "守护进程已启动"
+            except DaemonError:
+                time.sleep(0.1)
+        return False, "agent-notifier.service 已启动，但健康检查仍不可访问"
 
 
 def _request(config: Config, path: str, payload: object, timeout: float) -> dict[str, Any]:
