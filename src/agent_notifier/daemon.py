@@ -6,6 +6,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import logging
+import socket
 import threading
 from typing import Any, Callable
 
@@ -36,7 +37,8 @@ class DaemonRuntime:
         actual_sender = sender or NtfySender(config)
         self.queue = SendQueue(actual_sender.send, QUEUE_CAPACITY)
         self.monitor = FailureMonitor(config, self.queue.submit_background)
-        self.server = NotifierHTTPServer(
+        server_class = _server_class(config.monitor.listen_host)
+        self.server = server_class(
             (config.monitor.listen_host, config.monitor.listen_port),
             _handler_factory(self),
         )
@@ -48,7 +50,9 @@ class DaemonRuntime:
     def serve_forever(self) -> None:
         self.queue.start()
         self._ticker.start()
-        LOGGER.info("监听 http://%s:%s", *self.server.server_address)
+        LOGGER.info(
+            "监听 http://%s:%s", self.server.server_address[0], self.server.server_address[1]
+        )
         try:
             self.server.serve_forever()
         finally:
@@ -83,6 +87,16 @@ class DaemonRuntime:
 
 def run_daemon(config: Config) -> None:
     DaemonRuntime(config).serve_forever()
+
+
+def _server_class(host: str) -> type[NotifierHTTPServer]:
+    if ":" not in host:
+        return NotifierHTTPServer
+
+    class IPv6NotifierHTTPServer(NotifierHTTPServer):
+        address_family = socket.AF_INET6
+
+    return IPv6NotifierHTTPServer
 
 
 def _handler_factory(runtime: DaemonRuntime) -> type[BaseHTTPRequestHandler]:

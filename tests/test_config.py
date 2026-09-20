@@ -23,6 +23,10 @@ def test_defaults_and_environment_path(tmp_path: Path) -> None:
     assert config.monitor.listen_port == 4318
 
 
+def test_ipv6_loopback_is_supported() -> None:
+    assert parse_config({"monitor": {"listen_host": "::1"}}).monitor.listen_host == "::1"
+
+
 def test_relative_override_is_rejected() -> None:
     with pytest.raises(ConfigError, match="绝对路径"):
         config_path({"AGENT_NOTIFIER_CONFIG": "relative.toml"})

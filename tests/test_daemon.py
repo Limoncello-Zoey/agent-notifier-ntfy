@@ -1,6 +1,7 @@
 from dataclasses import replace
 import json
 from pathlib import Path
+import socket
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -116,3 +117,16 @@ def test_invalid_method_and_malformed_json_are_rejected(running_daemon) -> None:
     with pytest.raises(HTTPError) as raised:
         urlopen(malformed, timeout=2)
     assert raised.value.code == 400
+
+
+@pytest.mark.skipif(not socket.has_ipv6, reason="系统不支持 IPv6")
+def test_ipv6_loopback_uses_ipv6_http_server() -> None:
+    config = replace(Config(), monitor=MonitorConfig(listen_host="::1", listen_port=0))
+    try:
+        runtime = DaemonRuntime(config, sender=FakeSender())
+    except OSError as exc:
+        pytest.skip(f"当前环境未启用 IPv6 回环: {exc}")
+    try:
+        assert runtime.server.address_family == socket.AF_INET6
+    finally:
+        runtime.server.server_close()
