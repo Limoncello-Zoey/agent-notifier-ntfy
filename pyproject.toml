@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-notifier-ntfy"
+version = "0.1.0"
+description = "Agent-first ntfy notifications and Codex transport monitoring"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "Agent Notifier contributors"}]
+dependencies = ["tomli>=2; python_version < '3.11'"]
+
+[project.scripts]
+agent-notifier = "agent_notifier.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
