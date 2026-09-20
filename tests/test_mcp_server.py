@@ -31,8 +31,8 @@ def test_initialize_and_tools_list_expose_only_ntfy_send() -> None:
 
 def test_modern_discovery_advertises_current_and_legacy_protocols() -> None:
     result = MCPServer(config()).handle(request("server/discover"))["result"]
-    assert result["protocolVersions"][0] == "2026-07-28"
-    assert "2025-11-25" in result["protocolVersions"]
+    assert result["supportedVersions"] == ["2026-07-28"]
+    assert result["_meta"]["io.modelcontextprotocol/serverInfo"]["name"] == "agent-notifier"
 
 
 def test_tool_call_returns_structured_result() -> None:
@@ -90,5 +90,5 @@ def test_stdio_keeps_stdout_json_only_and_reports_start_failure_to_stderr() -> N
     lines = outgoing.getvalue().splitlines()
     assert len(lines) == 2
     assert json.loads(lines[0])["error"]["code"] == -32700
-    assert json.loads(lines[1])["result"] == {}
+    assert json.loads(lines[1])["result"]["_meta"]["io.modelcontextprotocol/serverInfo"]["name"] == "agent-notifier"
     assert "service unavailable" in errors.getvalue()

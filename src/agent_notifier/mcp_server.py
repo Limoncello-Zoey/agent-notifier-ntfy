@@ -17,6 +17,8 @@ SERVER_INFO = {"name": "agent-notifier", "version": "0.1.0"}
 LEGACY_PROTOCOL = "2025-11-25"
 MODERN_PROTOCOL = "2026-07-28"
 SUPPORTED_PROTOCOLS = [MODERN_PROTOCOL, LEGACY_PROTOCOL, "2025-06-18", "2024-11-05"]
+LEGACY_PROTOCOLS = SUPPORTED_PROTOCOLS[1:]
+SERVER_META = {"io.modelcontextprotocol/serverInfo": SERVER_INFO}
 
 TOOL = {
     "name": "ntfy_send",
@@ -93,14 +95,16 @@ class MCPServer:
             return _result(
                 request_id,
                 {
-                    "protocolVersions": SUPPORTED_PROTOCOLS,
+                    "supportedVersions": [MODERN_PROTOCOL],
                     "capabilities": {"tools": {}},
-                    "serverInfo": SERVER_INFO,
+                    "instructions": "使用 ntfy_send 发送任务状态通知。",
+                    "ttlMs": 0,
+                    "cacheScope": "private",
                 },
             )
         if method == "initialize":
             requested = params.get("protocolVersion")
-            protocol = requested if requested in SUPPORTED_PROTOCOLS else LEGACY_PROTOCOL
+            protocol = requested if requested in LEGACY_PROTOCOLS else LEGACY_PROTOCOL
             return _result(
                 request_id,
                 {
@@ -177,6 +181,8 @@ def run_mcp(
 
 
 def _result(request_id: Any, result: object) -> dict[str, Any]:
+    if isinstance(result, dict):
+        result = {**result, "_meta": {**SERVER_META, **result.get("_meta", {})}}
     return {"jsonrpc": "2.0", "id": request_id, "result": result}
 
 
