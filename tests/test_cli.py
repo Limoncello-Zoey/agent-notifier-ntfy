@@ -69,8 +69,10 @@ def test_send_json_uses_daemon_client(config_file, monkeypatch, capsys) -> None:
 
 
 def test_doctor_json_reports_failures_without_crashing(config_file, monkeypatch, capsys) -> None:
-    monkeypatch.setattr("agent_notifier.cli.shutil.which", lambda name: None)
+    monkeypatch.setattr("agent_notifier.diagnostics.shutil.which", lambda name: None)
     assert main(["doctor", "--json"]) == 1
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is False
-    assert {item["name"] for item in payload["checks"]} == {"config", "ntfy"}
+    assert {item["name"] for item in payload["checks"]} == {
+        "cli", "config", "ntfy", "daemon", "mcp", "otel", "notification_rules"
+    }

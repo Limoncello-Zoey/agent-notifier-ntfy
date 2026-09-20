@@ -6,13 +6,11 @@ import argparse
 from dataclasses import replace
 import json
 import logging
-from pathlib import Path
-import shutil
 import sys
-from typing import Any, Sequence
+from typing import Sequence
 
 from . import __version__
-from .client import daemon_health, notify_daemon
+from .client import notify_daemon
 from .config import (
     Config,
     DefaultsConfig,
@@ -24,6 +22,7 @@ from .config import (
     validate_config,
 )
 from .daemon import run_daemon
+from .diagnostics import doctor_checks
 from .errors import AgentNotifierError
 from .mcp_server import run_mcp
 from .notification import normalize_notification
@@ -219,27 +218,7 @@ def _send_command(args: argparse.Namespace) -> int:
 
 
 def _doctor_command(args: argparse.Namespace) -> int:
-    path = config_path()
-    checks: list[dict[str, Any]] = []
-    try:
-        config = load_config(path)
-    except AgentNotifierError as exc:
-        checks.append({"name": "config", "ok": False, "detail": str(exc)})
-        config = None
-    else:
-        checks.append({"name": "config", "ok": True, "detail": str(path)})
-
-    executable = shutil.which("ntfy")
-    checks.append(
-        {"name": "ntfy", "ok": executable is not None, "detail": executable or "PATH 中未找到"}
-    )
-    if config is not None:
-        try:
-            health = daemon_health(config)
-        except AgentNotifierError as exc:
-            checks.append({"name": "daemon", "ok": False, "detail": str(exc)})
-        else:
-            checks.append({"name": "daemon", "ok": health.get("status") == "ok", "detail": health})
+    checks = doctor_checks()
     result = {"ok": all(item["ok"] for item in checks), "checks": checks}
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
