@@ -73,6 +73,26 @@ def test_doctor_json_reports_failures_without_crashing(config_file, monkeypatch,
     assert main(["doctor", "--json"]) == 1
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is False
+    assert payload["scope"] == "global"
     assert {item["name"] for item in payload["checks"]} == {
         "cli", "config", "ntfy", "daemon", "mcp", "otel", "notification_rules"
     }
+
+
+def test_doctor_project_scope_forwards_project_root(monkeypatch, tmp_path: Path, capsys) -> None:
+    observed = {}
+
+    def checks(*, scope, project_root):
+        observed.update(scope=scope, project_root=project_root)
+        return []
+
+    monkeypatch.setattr("agent_notifier.cli.doctor_checks", checks)
+    assert main(["doctor", "--scope", "project", "--project-root", str(tmp_path), "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {"ok": True, "scope": "project", "checks": []}
+    assert observed == {"scope": "project", "project_root": tmp_path}
+
+
+def test_doctor_rejects_project_root_for_global_scope(capsys, tmp_path: Path) -> None:
+    assert main(["doctor", "--project-root", str(tmp_path)]) == 1
+    assert "--scope project" in capsys.readouterr().err

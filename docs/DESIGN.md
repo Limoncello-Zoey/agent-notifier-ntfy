@@ -89,7 +89,7 @@ README 采用 Agent-first 布局：最前方依次提供用户可直接转发给
 ### 3.2 Agent 环外：模型链路故障监测
 
 1. `agent-notifierd` 由 `systemd --user` 启动并常驻，绑定 `127.0.0.1`，不暴露到局域网。
-2. Codex 在用户级 `~/.codex/config.toml` 中启用 OTLP/HTTP JSON 日志导出，并关闭用户提示词正文导出。
+2. Codex 在用户级 `~/.codex/config.toml` 中启用 OTLP/HTTP JSON 日志导出，并关闭用户提示词正文导出。该能力只在全局完整部署模式中启用。
 3. 守护进程接收 `codex.api_request`、`codex.sse_event`、`codex.websocket_request` 和 `codex.websocket_event` 等结构化事件。
 4. 失败事件先进入短暂宽限窗口；同一会话随后出现成功事件时取消告警，避免把自动重试误报为最终故障。
 5. 宽限期后仍未恢复时，守护进程通过共享发送核心发出优先级 `5` 的模型链路异常通知。
@@ -116,23 +116,36 @@ exporter = { otlp-http = {
 
 目标使用方式不是让用户复制一组 Shell 命令，也不是由项目提供一个假设所有机器环境相同的整体安装器。用户只需把 Git 地址和可选的 ntfy 话题交给本机 Agent；Agent 克隆仓库、阅读 README 中的部署提示，探测本机环境，并持续执行到部署和验收完成。
 
-项目负责定义稳定的应用接口和目标状态：CLI 命令、配置格式、`agent-notifier mcp`、`agent-notifier daemon`、MCP Schema、OTel 端点及验收行为。部署 Agent 负责根据当前操作系统、架构、包管理器、Python 环境、Codex 配置和用户目录约定选择具体命令与安装路径。
+项目负责定义稳定的应用接口和目标状态：CLI 命令、配置格式、`agent-notifier mcp`、`agent-notifier daemon`、MCP Schema、OTel 端点及验收行为。部署 Agent 负责根据当前操作系统、架构、包管理器、Python 环境、Codex 配置、目标作用域和用户目录约定选择具体命令与安装路径。
+
+#### 3.3.1 部署作用域
+
+部署支持两种显式作用域：
+
+- **全局完整模式**：MCP 写入用户级 Codex 配置，通知规则写入全局 Agent 指令，并在用户级配置启用 OTel。Agent 环内通知和模型链路监测均作用于该 Codex host 的所有项目。
+- **项目限定模式**：MCP 写入受信任 Git 项目根目录的 `.codex/config.toml`，通知规则写入该项目实际生效的 `AGENTS.override.md` 或 `AGENTS.md`。项目配置中不写入 `otel`，因为 Codex 会忽略项目级遥测路由；该模式只提供 Agent 环内通知。
+
+两种模式都使用稳定的用户级 CLI、应用配置和单实例 `systemd --user` 守护进程。“项目限定”指自动激活范围，不是把 Python 包和守护进程安装进仓库。
+
+项目限定模式的隔离还要求用户级 Codex 配置中不存在 `agent-notifier` MCP、不将 OTel 指向该守护进程，且全局 Agent 指令中不存在 Agent Notifier 规则块。发现已有全局激活时必须报告作用域冲突，不得静默删除。
 
 部署 Agent 必须完成：
 
-1. 只读探测 Linux/WSL2、架构、Python、Codex CLI、`systemd --user`、`ntfy` CLI、XDG 路径、`CODEX_HOME` 和现有配置；不支持的平台明确失败。
+1. 只读探测 Linux/WSL2、架构、Python、Codex CLI、`systemd --user`、`ntfy` CLI、XDG 路径、`CODEX_HOME`、部署作用域、项目根目录和现有配置；不支持的平台明确失败。
 2. 选择适合本机的用户级 Python 安装方式，提供稳定 CLI 入口，且运行时不依赖克隆目录继续存在。
 3. 初始化或无损合并应用配置。
 4. 注册并启动单实例用户级 `agent-notifier.service`，禁止通过裸后台进程实现常驻。
-5. 幂等注册并启用 `agent-notifier` STDIO MCP；只启用 `ntfy_send` 并将其 `approval_mode` 设为 `approve`。
-6. 无损更新 Codex 用户级 `config.toml` 的 OTel 配置；修改前创建带时间戳的备份。
-7. 在 Codex 实际读取的全局 `AGENTS.md` 或 `AGENTS.override.md` 中维护带起止标记的通知规则块，覆盖任务交还、长程小点进度和 Git 提交三类事件，并保留其他用户指令。
-8. 执行 CLI、配置、systemd、MCP Schema、OTel、Agent 指令和真实 ntfy 消息的端到端验收。
+5. 在选定作用域幂等注册并启用 `agent-notifier` STDIO MCP；只启用 `ntfy_send` 并将其 `approval_mode` 设为 `approve`。
+6. 只在全局完整模式中无损更新 Codex 用户级 `config.toml` 的 OTel 配置；项目限定模式不修改 OTel。
+7. 在 Codex 于选定作用域实际读取的 Agent 指令文件中维护通知规则块，并保留其他指令。
+8. 执行 CLI、配置、systemd、MCP Schema、作用域隔离、Agent 指令和真实 ntfy 消息的端到端验收；全局完整模式另外验收 OTel。
 9. 输出结构化部署摘要、实际路径、备份位置以及 Codex 重启提示。
 
-部署过程必须幂等。系统包安装是唯一允许触发 `sudo` 的步骤；程序、配置、MCP 和守护进程均使用用户权限。现有 OTel 或全局 Agent 配置无法无损合并时不得静默覆盖，应返回明确冲突并由执行部署的 Agent 请求用户决策。
+部署过程必须幂等。系统包安装是唯一允许触发 `sudo` 的步骤；程序、配置、MCP 和守护进程均使用用户权限。现有 OTel、MCP 或 Agent 配置无法无损合并，或与目标作用域冲突时，不得静默覆盖或删除，应返回明确冲突并请求用户决策。
 
-Codex 在启动时构建 MCP Tool 目录并读取全局 Agent 指令，因此当前执行部署的会话无法热加载新 Tool。守护进程在部署后立即可用；MCP 和通知触发规则从下一次 Codex 会话生效。CLI、IDE 扩展和 ChatGPT 桌面版分别需要新开会话、Restart extension 或 Restart MCP。
+项目限定部署会在目标仓库内产生或更新 Codex 配置与 Agent 指令文件。部署 Agent 不得自动暂存、提交或改写仓库级 `.gitignore`，必须在部署摘要中列出这些工作树变更。
+
+Codex 在启动时构建 MCP Tool 目录并读取 Agent 指令，因此当前执行部署的会话无法热加载新 Tool。守护进程在部署后立即可用；MCP 和通知触发规则从下一次 Codex 会话生效。项目限定模式的新会话必须从受信任的目标项目或其子目录启动。CLI、IDE 扩展和 ChatGPT 桌面版分别需要新开会话、Restart extension 或 Restart MCP。
 
 ## 4. 配置设计
 
@@ -344,6 +357,24 @@ agent-notifier mcp
 ```
 
 该命令以前台 STDIO 模式运行 MCP Server，stdout 只用于 JSON-RPC，诊断信息只写入 stderr。Codex MCP 注册应指向这个稳定的已安装 CLI 入口，不得指向源码仓库中的 Python 文件，确保克隆目录被移动或删除后仍能启动。
+
+### 6.8 部署诊断
+
+```bash
+agent-notifier doctor --scope global [--json]
+agent-notifier doctor --scope project [--project-root /absolute/project/path] [--json]
+```
+
+`global` 是默认作用域，保持原有 CLI 兼容性。`project` 模式默认从当前目录向上寻找 Git 根目录，也允许用 `--project-root` 明确指定。
+
+全局诊断检查用户级 MCP、OTel 和全局 Agent 指令。项目诊断检查：
+
+- 目标是 Git 项目；
+- 项目 `.codex/config.toml` 中的 MCP 完整且没有会被忽略的 `otel` 配置；
+- 项目实际生效的 Agent 指令文件包含完整通知规则；
+- 用户级配置没有同名 MCP、指向本守护进程的 OTel 路由或全局 Agent Notifier 规则块。
+
+`doctor` 不会修改配置，也不会自动把项目标记为受信任；项目信任和 MCP 实际加载状态还必须在目标项目内通过 Codex 本身验收。
 
 ## 7. 统一消息模型与 MCP Tool 接口
 
@@ -670,6 +701,8 @@ Agent 每次成功执行 `git commit` 后都必须立即调用一次 `ntfy_send`
 - Tool 返回内容有界，不泄露环境变量和配置敏感值。
 - `doctor` 仅检查起止标记之间的内容，不得将规则块外的文字误认为通知策略。
 - 只包含旧版交还通知语义、缺少长程小点或 `git commit` 语义的规则块无法通过 `doctor`。
+- 项目诊断能从子目录找到 Git 根目录，也能使用显式 `--project-root`。
+- 项目配置含 `otel`，或用户级仍激活同名 MCP、Agent Notifier OTel 路由或全局通知规则时，项目隔离诊断失败。
 
 ### 12.4 验收测试
 
@@ -695,12 +728,12 @@ Agent 每次成功执行 `git commit` 后都必须立即调用一次 `ntfy_send`
 ### 12.6 部署验收场景
 
 - 在不同的受支持 Linux/WSL2 环境中，部署 Agent 能先探测差异并选择适合本机的安装方式，不依赖固定包管理器或绝对路径。
-- 对同一目标状态连续部署两次，配置块、MCP 条目、systemd 服务和全局 Agent 指令均不重复。
-- 预置包含其他字段的 Codex 配置和全局 Agent 指令，部署后无关内容保持不变并生成可识别的备份。
+- 全局完整和项目限定模式各连续部署两次，配置块、MCP 条目、systemd 服务和 Agent 指令均不重复。
+- 预置包含其他字段的用户级/项目级 Codex 配置和 Agent 指令，部署后无关内容保持不变并生成可识别的备份。
 - 预置无法无损合并的 OTel 配置时明确停止，不覆盖原配置，也不伪造部署成功。
 - 在缺少 ntfy 话题、不支持的平台、`systemd --user` 不可用和系统依赖缺失时返回可操作诊断。
-- 部署完成后的 `agent-notifier doctor --json` 能逐项报告 CLI、配置、daemon、MCP、OTel 和通知规则状态。
-- 从任意目录启动新 Codex 会话时都能发现 `agent-notifier` MCP 和全局通知规则，不依赖原克隆目录。
+- 部署完成后的 `agent-notifier doctor --scope global --json` 和 `doctor --scope project --project-root ... --json` 能按各自目标状态逐项报告。
+- 全局模式从任意目录启动均能发现 MCP 和通知规则；项目模式只有在目标受信任项目及其子目录启动时才能发现，在其他项目中不可见。
 - 在新 Codex 会话中执行包含多个可验证小点的长程任务，每个小点完成时都能收到一条及时通知，且不会按单条命令刷屏。
 - 在专用测试仓库中连续执行两次 `git commit`，每次成功后都能收到包含对应短哈希和提交主题的通知，不合并成延后汇总。
 
@@ -713,6 +746,7 @@ Agent 每次成功执行 `git commit` 后都必须立即调用一次 `ntfy_send`
 - 环内和环外通知使用同一个 `Notification` 模型及同一套校验、渲染和发送逻辑。
 - Agent 只需了解单个 `ntfy_send` Tool。
 - Agent 能在任务交还、长程小点完成和每次成功 `git commit` 后提供带语义的环内通知；后台守护进程仅兜底模型 API 与响应流故障。
+- 用户可以选择全局完整模式或项目限定模式；项目模式只在目标受信任项目激活 Agent/MCP 通知，不伪装提供无法项目化的 OTel 监测。
 - 单话题、话题组和空话题组在同一接口下行为明确。
 - MCP Server 随 Codex 生命周期运行；`agent-notifierd` 作为独立 `systemd --user` 服务运行。
 - 用户只需把 Git 地址和必要的 ntfy 话题交给本机 Agent；Agent 可依据 README 的目标状态和约束，自行适配本机环境并完成部署与验收。

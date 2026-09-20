@@ -6,6 +6,7 @@ import argparse
 from dataclasses import replace
 import json
 import logging
+from pathlib import Path
 import sys
 from typing import Sequence
 
@@ -77,6 +78,17 @@ def build_parser() -> argparse.ArgumentParser:
     commands.add_parser("daemon", help="前台运行通知守护进程")
     commands.add_parser("mcp", help="运行 STDIO MCP Server")
     doctor = commands.add_parser("doctor", help="检查本地安装与运行状态")
+    doctor.add_argument(
+        "--scope",
+        choices=("global", "project"),
+        default="global",
+        help="验证全局完整部署或项目限定部署（默认: global）",
+    )
+    doctor.add_argument(
+        "--project-root",
+        type=Path,
+        help="项目限定诊断的 Git 根目录；省略时从当前目录向上查找",
+    )
     doctor.add_argument("--json", action="store_true")
     return parser
 
@@ -218,8 +230,10 @@ def _send_command(args: argparse.Namespace) -> int:
 
 
 def _doctor_command(args: argparse.Namespace) -> int:
-    checks = doctor_checks()
-    result = {"ok": all(item["ok"] for item in checks), "checks": checks}
+    if args.scope != "project" and args.project_root is not None:
+        raise AgentNotifierError("--project-root 仅能与 --scope project 一起使用")
+    checks = doctor_checks(scope=args.scope, project_root=args.project_root)
+    result = {"ok": all(item["ok"] for item in checks), "scope": args.scope, "checks": checks}
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
