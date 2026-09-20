@@ -195,6 +195,30 @@ def save_config(config: Config, path: Path | None = None) -> Path:
     return destination
 
 
+def validate_config(config: Config) -> Config:
+    """Revalidate a programmatically modified immutable Config instance."""
+    return parse_config(
+        {
+            "version": config.version,
+            "server": {"base_url": config.server.base_url},
+            "defaults": {
+                **({"target": config.defaults.target} if config.defaults.target is not None else {}),
+                "priority": config.defaults.priority,
+            },
+            "monitor": {
+                "listen_host": config.monitor.listen_host,
+                "listen_port": config.monitor.listen_port,
+                "failure_grace_seconds": config.monitor.failure_grace_seconds,
+                "dedupe_window_seconds": config.monitor.dedupe_window_seconds,
+                "queue_capacity": config.monitor.queue_capacity,
+                "request_timeout_seconds": config.monitor.request_timeout_seconds,
+            },
+            "topics": config.topics,
+            "groups": config.groups,
+        }
+    )
+
+
 def render_config(config: Config) -> str:
     lines = [
         "version = 1",
