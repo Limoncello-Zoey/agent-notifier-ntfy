@@ -18,16 +18,24 @@
 ## 2. 已锁定的架构
 
 ```text
-Codex Agent ──MCP ntfy_send────────────────────┐
-                                               │
-Codex OTel ──OTLP/HTTP JSON──> agent-notifierd ├──> 共享业务核心
-                                               │    配置/解析/发送
-用户 CLI ──────────────────────────────────────┘          │
-                                                         ▼
-                                                /usr/bin/ntfy publish
-                                                         │
-                                                         ▼
-                                                  https://ntfy.sh
+Codex Agent ──MCP ntfy_send──────────────┐
+                                         │
+用户 CLI ────────────────────────────────┼──> 本地发送请求
+                                         │
+Codex OTel ──OTLP/HTTP JSON──────────────┤
+                                         ▼
+                                  agent-notifierd
+                                  ├─ 故障状态监测
+                                  └─ FIFO 待发送消息池
+                                           │
+                                           ▼
+                                  共享配置/解析/发送核心
+                                           │
+                                           ▼
+                                  /usr/bin/ntfy publish
+                                           │
+                                           ▼
+                                    https://ntfy.sh
 ```
 
 实现语言采用 Python 3，优先只使用标准库。MCP Server 使用依赖无关的 STDIO JSON-RPC 实现，与本机现有 MCP Server 风格保持一致。
@@ -45,6 +53,7 @@ agent_notifier/
 │   ├── config.py
 │   ├── resolver.py
 │   ├── sender.py
+│   ├── send_queue.py
 │   ├── mcp_server.py
 │   ├── otlp_receiver.py
 │   ├── failure_monitor.py
@@ -67,8 +76,8 @@ agent_notifier/
 
 1. Codex 启动或建立 MCP 连接时，按配置启动 `mcp_server.py` 本地进程。
 2. MCP Server 在 Codex 主机存活期间等待 Tool Call，空闲时不执行发送逻辑。
-3. Agent 调用 `ntfy_send` 后，MCP Server 解析目标并为每个最终话题执行一次 `ntfy publish`。
-4. 每个 `ntfy publish` 都是短生命周期子进程，发送完成即退出。
+3. Agent 调用 `ntfy_send` 后，MCP Server 将发送请求提交到 `agent-notifierd` 的 FIFO 待发送消息池，并等待该请求的最终结果。
+4. 守护进程中的单一发送 Worker 解析目标，并为每个最终话题执行一次 `ntfy publish`；每个 `ntfy publish` 都是短生命周期子进程，发送完成即退出。
 5. Codex 主机退出或断开连接后，STDIO MCP Server 随之退出。
 
 ### 3.2 Agent 环外：模型链路故障监测
@@ -79,6 +88,7 @@ agent_notifier/
 4. 失败事件先进入短暂宽限窗口；同一会话随后出现成功事件时取消告警，避免把自动重试误报为最终故障。
 5. 宽限期后仍未恢复时，守护进程通过共享发送核心发出优先级 `5` 的模型链路异常通知。
 6. 相同故障在去重窗口内只通知一次；恢复后再次失败可重新通知。
+7. 不同会话分别维护状态并分别发送通知；即使错误原因相同也不跨会话合并，因为模型服务不可用可能只影响部分会话，逐会话提示属于预期行为。
 
 明确不实现：Codex PID 监测、父进程死亡检测、心跳、崩溃推断、终端关闭检测、WSL 关闭检测和 `agent-notifier run -- codex` 包装入口。这些能力在当前实际使用场景中没有收益，按 YAGNI 删除。
 
@@ -155,7 +165,7 @@ silent = []
 - 任何话题和话题组都不允许重名。
 - 名称必须非空，并限制为便于 CLI 使用的标识符：字母、数字、点、下划线和短横线。
 - `defaults.target` 必须引用存在的话题或话题组；允许不配置默认目标。
-- `defaults.priority` 必须为 `1..5`，默认值为 `4`。
+- `defaults.priority` 必须为 `4` 或 `5`，默认值为 `4`。
 - `monitor.listen_host` 第一版只允许回环地址，默认 `127.0.0.1`。
 - `monitor.listen_port` 必须为有效 TCP 端口，默认 `4318`。
 - 故障宽限期与去重窗口必须为正整数；默认分别为 `30` 秒和 `300` 秒。
@@ -252,15 +262,17 @@ agent-notifier default clear
 
 ```bash
 agent-notifier send [TARGET] \
+  --emoji "✅" \
   --message "任务已经完成" \
   --title "Codex 通知" \
   --priority 4 \
-  --tag white_check_mark
+  --tag codex
 ```
 
 - `TARGET` 省略时使用 `defaults.target`。
+- `--emoji` 可选，直接传入一个 Unicode emoji；省略时使用 `ℹ️`。
 - `--message` 必填。
-- `--title` 可选。
+- `--title` 可选，省略时规范化为 `Agent Notifier`。
 - `--priority` 可选，未提供时使用配置默认值。
 - `--tag` 可重复；内部转换为 ntfy 的逗号分隔标签。
 - CLI 输出与 MCP 使用相同的结构化结果；终端默认展示人类可读摘要，并提供 `--json` 输出完整 JSON。
@@ -272,6 +284,15 @@ agent-notifier daemon
 ```
 
 该命令以前台方式运行 OTLP/HTTP JSON 接收器，日志写入 stderr，便于 `systemd --user` 管理。它不负责 fork、写 PID 文件或自行后台化。
+
+守护进程在同一个回环 HTTP 服务上提供两个用途明确的端点：
+
+```text
+POST /v1/logs    Codex OTLP/HTTP JSON 日志入口
+POST /v1/notify  MCP 与 CLI 的本地发送请求入口
+```
+
+`/v1/logs` 接收遥测后立即返回，故障监测产生的通知直接在进程内入队，不等待 ntfy 网络发送完成。`/v1/notify` 在请求入队后等待该任务完成，并返回统一结构化结果。两个端点都只绑定回环地址，并分别校验请求格式与请求体大小。
 
 建议用户服务：
 
@@ -288,7 +309,53 @@ RestartSec=3
 WantedBy=default.target
 ```
 
-## 7. MCP Tool 接口
+## 7. 统一消息模型与 MCP Tool 接口
+
+### 7.1 统一消息模型
+
+环内、环外和 CLI 消息在进入待发送消息池前都必须规范化为同一个 `Notification` 对象：
+
+```json
+{
+  "target": "zoey",
+  "emoji": "✅",
+  "title": "任务完成",
+  "message": "设计文档已经更新，当前没有未解决的阻塞项。",
+  "priority": 4,
+  "tags": ["codex"]
+}
+```
+
+字段定义：
+
+- `target`：已配置的话题或话题组名称；省略时解析为默认目标。
+- `emoji`：调用方根据通知内容自行选择的一个 Unicode emoji，发送层将其作为标题前缀。
+- `title`：通知标题，概括“发生了什么”。
+- `message`：通知正文，提供必要结果、状态或错误摘要；保持简报风格，不强制附加会话 ID、项目名等固定前缀。
+- `priority`：通知优先级。本系统只使用 `4` 或 `5`。
+- `tags`：可选的附加 ntfy 标签；按首次出现顺序去重，与主 emoji 相互独立。
+
+统一校验规则：
+
+- `emoji`、`title`、`message` 和 `priority` 在规范化后的对象中必须存在。
+- `emoji` 去除首尾空白后不能为空；不限定候选集合或语义映射。
+- `title` 去除首尾空白后不能为空；加上 emoji 前缀和一个空格后的最终标题，UTF-8 编码后不超过 `256` 字节。
+- `message` 去除首尾空白后不能为空，UTF-8 编码后不超过 `3500` 字节，避免超过 ntfy 的 `4096` 字节消息上限后被自动当作附件。
+- `priority` 必须为 `4` 或 `5`。
+- 附加 tags 合计不超过 `400` UTF-8 字节，为 ntfy 的 `512` 字节 tags 上限预留余量。
+- 消息正文使用纯文本；第一版不启用 Markdown、附件、点击动作、图标 URL 或延迟发送。
+
+标题渲染规则固定为：
+
+```text
+{emoji} {normalized_title}
+```
+
+例如 `emoji = "✅"`、`title = "任务完成"` 最终发送为 `✅ 任务完成`。调用方不得在 `title` 中自行重复添加 emoji；发送层只负责添加一次前缀。
+
+队列内部可以额外携带 `source` 和 `event` 元数据，例如 `agent/custom` 或 `monitor/rate_limited`，用于选择模板、诊断和测试。这些字段不是通知展示格式，也不暴露给 MCP Tool。
+
+### 7.2 MCP Tool
 
 MCP Server 名称：
 
@@ -312,6 +379,11 @@ ntfy_send
       "type": "string",
       "description": "已配置的话题或话题组名称；省略时使用默认目标。"
     },
+    "emoji": {
+      "type": "string",
+      "minLength": 1,
+      "description": "用于标题前缀的一个 emoji。"
+    },
     "message": {
       "type": "string",
       "minLength": 1,
@@ -319,22 +391,35 @@ ntfy_send
     },
     "title": {
       "type": "string",
-      "description": "可选通知标题。"
+      "minLength": 1,
+      "description": "简短概括发生的事件。"
     },
     "priority": {
       "type": "integer",
-      "minimum": 1,
-      "maximum": 5,
-      "description": "可选优先级；省略时使用配置默认值。"
+      "enum": [4, 5],
+      "description": "正常状态使用 4，严重失败或需要立即干预时使用 5。"
     },
     "tags": {
       "type": "array",
       "items": {"type": "string"},
-      "description": "可选 ntfy 标签或 emoji 名称。"
+      "description": "可选附加 ntfy 标签。"
     }
   },
-  "required": ["message"],
+  "required": ["emoji", "title", "message", "priority"],
   "additionalProperties": false
+}
+```
+
+Codex 通过 MCP `tools/list` 返回的 `inputSchema` 得知 `emoji` 是必填参数及其结构用途。Schema 不提供候选集合或场景映射，具体 emoji 由模型根据当前通知内容自行决定；服务端不维护 emoji 字典，也不在 MCP Server `instructions` 或 AGENTS.md 中重复规定选择规则。
+
+环内调用示例：
+
+```json
+{
+  "emoji": "✅",
+  "title": "设计方案已更新",
+  "message": "统一消息格式和环外故障模板已经写入设计文档。",
+  "priority": 4
 }
 ```
 
@@ -349,11 +434,15 @@ Codex 侧应将该 Tool 配置为自动批准，以支持任务停止前的无�
 
 ## 8. 发送行为与返回结果
 
+所有入口产生的发送请求都进入 `agent-notifierd` 内的有界 FIFO 待发送消息池，包括 MCP、CLI 和模型链路监测器自身产生的通知。消息池不跨会话合并、不丢弃语义相似的消息；单一 Worker 按入队顺序串行发送，避免多个 Codex 会话同时调用 `ntfy publish` 触发 ntfy.sh 限流。
+
+消息池第一版只保证进程存活期间的排队和限流，不做磁盘持久化。提交方等待本次发送的最终结果；守护进程不可用或等待超时时返回明确失败，不绕过消息池直接发送，以免破坏全局串行约束。
+
 发送实现使用无 Shell 的参数数组调用，禁止拼接 Shell 命令：
 
 ```text
 /usr/bin/ntfy publish
-  --title TITLE
+  --title "EMOJI TITLE"
   --priority PRIORITY
   --tags TAGS
   https://ntfy.sh/TOPIC
@@ -362,10 +451,13 @@ Codex 侧应将该 Tool 配置为自动批准，以支持任务停止前的无�
 
 批量发送规则：
 
+- 一个发送请求及其解析出的全部最终话题构成一个队列任务。
 - 按最终话题顺序逐个发送。
 - 单个话题失败后继续发送其余话题，不采用 fail-fast。
 - 收集每个话题的返回码、服务端消息 ID和错误摘要。
 - 不把完整环境变量、认证信息或无界 stdout/stderr 返回给模型。
+- 不仅检查 `ntfy` 进程退出码，还必须解析 JSON 输出；存在服务端 `code`、`http` 或 `error` 时按失败处理，即使进程退出码为 `0`。
+- HTTP `429` 和瞬时 `5xx` 使用有界指数退避重试；重试期间保留当前 Worker 的发送顺序，不允许后续消息越过。
 
 统一结果示例：
 
@@ -417,8 +509,9 @@ MCP Tool 只提供“发送通知”的能力，不负责判断 Agent 何时停�
 
 建议状态映射：
 
-- 正常完成、等待输入、普通暂停：优先级 `4`。
-- 严重失败、需要立即人工干预、不可恢复阻塞：优先级 `5`。
+- 正常完成、等待输入、普通暂停或非致命异常：优先级 `4`。
+- 严重失败、需要立即人工干预或不可恢复阻塞：优先级 `5`。
+- emoji 不与优先级绑定，由模型根据通知内容自行选择。
 
 ## 10. 模型链路故障策略
 
@@ -437,6 +530,31 @@ MCP Tool 只提供“发送通知”的能力，不负责判断 Agent 何时停�
 - `codex.websocket_request`：WebSocket 请求失败。
 - `codex.websocket_event`：WebSocket 消息处理失败。
 
+### 10.1 环外固定模板
+
+环外通知不让模型生成内容。故障分类器根据 OTel 事件和清洗后的字段选择固定模板，再构造与 MCP 完全相同的 `Notification` 对象：
+
+| 内部事件 | 判断条件 | emoji | 标题 | 优先级 |
+|---|---|---|---|---:|
+| `authentication_failed` | HTTP `401` 或 `403` | 🔐 | `模型认证失败` | 5 |
+| `rate_limited` | HTTP `429`，宽限期后仍未恢复 | ⏳ | `模型服务限流` | 5 |
+| `server_unavailable` | HTTP `5xx`，宽限期后仍未恢复 | 🚨 | `模型服务异常` | 5 |
+| `connection_failed` | DNS、TCP、TLS 或无 HTTP 状态的连接失败 | 📡 | `模型服务连接失败` | 5 |
+| `response_stream_disconnected` | SSE 或 WebSocket 响应流失败 | 🔌 | `模型响应流中断` | 5 |
+| `transport_failure` | 无法归入以上类别的最终传输错误 | ⚠️ | `模型通信异常` | 5 |
+
+分类按表格从上到下匹配，避免一个事件同时命中多个模板。正文按以下纯文本结构生成，只输出实际存在的字段：
+
+```text
+模型：{model}
+通道：{transport}
+状态：{status_summary}
+尝试：{attempt}
+错误：{sanitized_error}
+```
+
+动态字段必须截断和清洗；不得包含提示词、模型输出、认证头、Token 或完整原始载荷。环外模板不添加会话 ID 或项目名，也不跨会话合并消息。
+
 处理规则：
 
 1. 按会话 ID 和传输类型维护待确认故障。
@@ -444,9 +562,12 @@ MCP Tool 只提供“发送通知”的能力，不负责判断 Agent 何时停�
 3. 同一会话和传输随后出现成功事件时清除待确认故障。
 4. 待确认故障超过 `failure_grace_seconds` 后发送一次优先级 `5` 通知。
 5. 消息只包含模型、传输类型、HTTP 状态、尝试次数和经过截断/清洗的错误摘要，不包含用户提示词、模型输出或认证信息。
-6. 相同故障指纹在 `dedupe_window_seconds` 内抑制重复通知。
+6. 相同会话内的相同故障指纹在 `dedupe_window_seconds` 内抑制重复通知；不同会话之间不去重、不聚合。
+7. 只保留仍在宽限期内的故障和尚未过期的去重记录；恢复、告警处理完成或窗口过期后及时清理，不永久保存历史会话状态。
 
 这是一种可靠的“最终未恢复”近似判断，而不是对 Codex 内部重试状态机的复制。若后续证据表明 OTel 事件不足，再考虑将 App Server 适配器作为可选增强；第一版不实现。
+
+当前先保留“会话 ID + 传输类型”的状态键。理论上，同一轮请求中的 API、SSE 和 WebSocket 事件可能产生重复告警，或不同轮次的事件可能相互影响；在没有真实故障样本前不预先引入 `turn.id` 和更复杂的关联状态机。实现时记录必要的诊断字段，若实际出现误清除或重复告警，再根据真实 OTLP 事件序列调整。
 
 ## 11. 错误处理与安全边界
 
@@ -461,6 +582,7 @@ MCP Tool 只提供“发送通知”的能力，不负责判断 Agent 何时停�
 - OTLP 接收器只监听回环地址，并限制请求体大小、HTTP 方法和内容类型。
 - OTel 配置保持 `log_user_prompt = false`；守护进程不落盘保存原始事件正文。
 - 遥测解析失败只记录有界错误，不影响 Codex 本身，也不触发通知风暴。
+- 待发送消息池必须有固定容量；容量耗尽时返回明确的队列已满错误，不能无限占用内存。
 - 第一版不实现用户名、密码、Token、附件、邮件转发和延迟发送，遵循 YAGNI。
 
 ## 12. 测试方案
@@ -473,6 +595,11 @@ MCP Tool 只提供“发送通知”的能力，不负责判断 Agent 何时停�
 - 空组和嵌套后为空的组解析为零话题。
 - 缺失成员、缺失默认目标、非法优先级和未知字段均报错。
 - CLI 修改配置失败时原文件保持不变。
+- 环内、环外和 CLI 输入均规范化为相同 `Notification` 结构。
+- MCP 缺少 emoji、标题、正文或优先级时拒绝调用。
+- 空 emoji、非 `4/5` 优先级以及超过 UTF-8 字节限制的字段均被拒绝。
+- emoji 不经过字典映射，最终标题只包含一个 emoji 前缀。
+- 附加 tags 按首次出现顺序去重，不自动加入主 emoji。
 
 ### 12.2 发送测试
 
@@ -480,6 +607,9 @@ MCP Tool 只提供“发送通知”的能力，不负责判断 Agent 何时停�
 - 单话题成功、全部成功、部分失败、全部失败和超时结果正确。
 - 标题缺失、多个标签、中文消息和特殊字符不会产生 Shell 注入或错误拆词。
 - 空组不启动 `ntfy` 子进程。
+- 多个 MCP/CLI 并发提交时，消息全部进入同一 FIFO 队列并按顺序发送，不跨会话合并。
+- `ntfy` 退出码为 `0` 但 JSON 包含 HTTP `429` 时仍判定失败，并执行有界退避重试。
+- 消息池容量耗尽和等待超时均返回明确错误。
 
 ### 12.3 MCP 协议测试
 
@@ -504,14 +634,19 @@ MCP Tool 只提供“发送通知”的能力，不负责判断 Agent 何时停�
 - 单次失败进入宽限期，不立即通知。
 - 宽限期内出现成功事件会取消待发送通知。
 - 连续失败且未恢复时只发送一次优先级 `5` 通知。
-- 去重窗口内的相同错误被抑制，不同会话或不同错误可以独立通知。
+- 去重窗口内同一会话的相同错误被抑制；不同会话即使错误相同也分别通知。
+- 已恢复、已处理和已过期状态会被清理，历史会话不会永久驻留内存。
 - 原始事件中的提示词、输出、Token 和无界错误正文不会进入 ntfy 消息。
+- HTTP `401/403/429/5xx`、连接失败、SSE/WebSocket 中断和未知传输错误均选择正确的固定模板。
+- 同一 OTel 事件最多选择一个环外模板，动态字段缺失时正文不产生空标签行。
 
 ## 13. 完成标准
 
 - 用户可以通过 CLI 或直接编辑 TOML 管理话题和递归话题组。
 - 配置能够确定性检测重名、缺失引用和循环。
 - CLI 与 MCP 共用同一业务实现，不复制解析或发送逻辑。
+- CLI、MCP 和故障监测通知共用一个有界 FIFO 待发送消息池，所有通知保持独立并串行发送。
+- 环内和环外通知使用同一个 `Notification` 模型及同一套校验、渲染和发送逻辑。
 - Agent 只需了解单个 `ntfy_send` Tool。
 - Agent 能继续提供带任务语义的环内通知；后台守护进程仅兜底模型 API 与响应流故障。
 - 单话题、话题组和空话题组在同一接口下行为明确。
