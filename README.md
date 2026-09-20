@@ -1,20 +1,20 @@
 # Agent Notifier for ntfy
 
-> [!IMPORTANT]
-> 当前仓库处于设计阶段，运行代码尚未实现。下面定义的是最终交付时必须保持稳定的应用接口和 Agent 部署指南，现阶段请勿把示例命令视为已经可执行。
+面向 Codex Agent 的本地 ntfy 通知系统。项目已经实现可安装的 Python CLI、STDIO MCP Server、
+有界串行发送队列，以及用于监测 Codex 模型链路故障的 OTLP/HTTP JSON 守护进程。
 
 ## 一句话交给 Agent 安装
 
-将下面这句话中的地址替换为本项目最终 Git 地址，然后直接发给运行在 Linux 或 WSL 中的 Codex Agent：
+直接把下面这句话发给运行在 Linux 或 WSL 中的 Codex Agent：
 
 ```text
-请安装并配置这个项目：<Git 仓库 URL>。克隆后严格遵循 README 中的“Agent 自适应部署指南”，先探测本机环境并自行决定合适的安装方式，持续执行到配置、服务启动和验收全部完成；仅在缺少 ntfy 话题等必要信息、需要我输入 sudo 密码或遇到无法安全自动解决的配置冲突时询问我。不要执行 curl | sh，不要删除或覆盖无关配置。
+请安装并配置这个项目：https://github.com/Limoncello-Zoey/agent-notifier-ntfy。克隆后严格遵循 README 中的“Agent 自适应部署指南”，先探测本机环境并自行决定合适的安装方式，持续执行到配置、服务启动和验收全部完成；仅在缺少 ntfy 话题等必要信息、需要我输入 sudo 密码或遇到无法安全自动解决的配置冲突时询问我。不要执行 curl | sh，不要删除或覆盖无关配置。
 ```
 
 如果已经知道接收通知的 ntfy 话题，建议直接写进同一句话，避免安装中途询问：
 
 ```text
-请安装并配置这个项目：<Git 仓库 URL>，默认 ntfy 话题为 <TOPIC>。克隆后严格遵循 README 中的“Agent 自适应部署指南”，先探测本机环境并自行决定合适的安装方式，持续执行到配置、服务启动和验收全部完成；仅在需要我输入 sudo 密码或遇到无法安全自动解决的配置冲突时询问我。不要执行 curl | sh，不要删除或覆盖无关配置。
+请安装并配置这个项目：https://github.com/Limoncello-Zoey/agent-notifier-ntfy，默认 ntfy 话题为 <TOPIC>。克隆后严格遵循 README 中的“Agent 自适应部署指南”，先探测本机环境并自行决定合适的安装方式，持续执行到配置、服务启动和验收全部完成；仅在需要我输入 sudo 密码或遇到无法安全自动解决的配置冲突时询问我。不要执行 curl | sh，不要删除或覆盖无关配置。
 ```
 
 ## 配置入口
@@ -48,6 +48,32 @@ export AGENT_NOTIFIER_CONFIG="/absolute/path/config.toml"
 agent-notifier config validate
 systemctl --user restart agent-notifier.service
 ```
+
+## 已实现接口
+
+安装后可直接运行设计文档定义的全部公共入口：
+
+```bash
+agent-notifier config init
+agent-notifier topic set personal your_private_ntfy_topic
+agent-notifier default set personal
+agent-notifier send --emoji "✅" --title "部署完成" --message "Agent Notifier 已可用"
+agent-notifier daemon
+agent-notifier mcp
+agent-notifier doctor --json
+```
+
+`send` 和 MCP Tool 都只向本地守护进程提交请求，不会在守护进程不可用时绕过队列直连
+ntfy。`daemon` 保持前台运行并把日志写到 stderr，由 `systemd --user` 负责常驻与重启。
+
+源码开发与回归测试不需要运行中的 ntfy 服务：
+
+```bash
+python3 -m pip install -e '.[test]'
+python3 -m pytest
+```
+
+Python 3.10 使用 `tomli` 读取 TOML；Python 3.11 及以上只使用标准库运行时依赖。
 
 ## Agent 自适应部署指南
 
