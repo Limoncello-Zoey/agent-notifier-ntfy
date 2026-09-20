@@ -90,6 +90,7 @@ class MCPServer:
         params = request.get("params", {})
         if not isinstance(params, dict):
             return _error(request_id, -32602, "Invalid params")
+        modern = method == "server/discover" or _is_modern(params)
 
         if method == "server/discover":
             return _result(
@@ -101,6 +102,7 @@ class MCPServer:
                     "ttlMs": 0,
                     "cacheScope": "private",
                 },
+                modern=True,
             )
         if method == "initialize":
             requested = params.get("protocolVersion")
@@ -113,19 +115,23 @@ class MCPServer:
                     "serverInfo": SERVER_INFO,
                     "instructions": "使用 ntfy_send 发送任务状态通知。",
                 },
+                modern=False,
             )
         if method == "ping":
-            return _result(request_id, {})
+            return _result(request_id, {}, modern=modern)
         if method == "tools/list":
             return _result(
                 request_id,
                 {"tools": [TOOL], "ttlMs": 0, "cacheScope": "private"},
+                modern=modern,
             )
         if method == "tools/call":
-            return self._call_tool(request_id, params)
+            return self._call_tool(request_id, params, modern)
         return _error(request_id, -32601, "Method not found")
 
-    def _call_tool(self, request_id: Any, params: dict[str, Any]) -> dict[str, Any]:
+    def _call_tool(
+        self, request_id: Any, params: dict[str, Any], modern: bool
+    ) -> dict[str, Any]:
         if params.get("name") != "ntfy_send":
             return _error(request_id, -32602, "未知 Tool")
         arguments = params.get("arguments", {})
@@ -138,6 +144,7 @@ class MCPServer:
             return _result(
                 request_id,
                 {"content": [{"type": "text", "text": str(exc)}], "isError": True},
+                modern=modern,
             )
         structured = result.to_dict()
         summary = (
@@ -151,6 +158,7 @@ class MCPServer:
                 "structuredContent": structured,
                 "isError": result.status in {"failed", "partial_failure"},
             },
+            modern=modern,
         )
 
 
@@ -180,9 +188,13 @@ def run_mcp(
             outstream.flush()
 
 
-def _result(request_id: Any, result: object) -> dict[str, Any]:
-    if isinstance(result, dict):
-        result = {**result, "_meta": {**SERVER_META, **result.get("_meta", {})}}
+def _result(request_id: Any, result: object, *, modern: bool) -> dict[str, Any]:
+    if modern and isinstance(result, dict):
+        result = {
+            **result,
+            "resultType": "complete",
+            "_meta": {**SERVER_META, **result.get("_meta", {})},
+        }
     return {"jsonrpc": "2.0", "id": request_id, "result": result}
 
 
@@ -192,3 +204,11 @@ def _error(request_id: Any, code: int, message: str) -> dict[str, Any]:
         "id": request_id,
         "error": {"code": code, "message": message},
     }
+
+
+def _is_modern(params: dict[str, Any]) -> bool:
+    meta = params.get("_meta")
+    return (
+        isinstance(meta, dict)
+        and meta.get("io.modelcontextprotocol/protocolVersion") == MODERN_PROTOCOL
+    )

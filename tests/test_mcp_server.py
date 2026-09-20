@@ -32,7 +32,22 @@ def test_initialize_and_tools_list_expose_only_ntfy_send() -> None:
 def test_modern_discovery_advertises_current_and_legacy_protocols() -> None:
     result = MCPServer(config()).handle(request("server/discover"))["result"]
     assert result["supportedVersions"] == ["2026-07-28"]
+    assert result["resultType"] == "complete"
     assert result["_meta"]["io.modelcontextprotocol/serverInfo"]["name"] == "agent-notifier"
+
+
+def test_modern_requests_get_result_discriminator_but_legacy_requests_do_not() -> None:
+    server = MCPServer(config())
+    modern = server.handle(
+        request(
+            "tools/list",
+            {"_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}},
+        )
+    )
+    legacy = server.handle(request("tools/list"))
+    assert modern["result"]["resultType"] == "complete"
+    assert "resultType" not in legacy["result"]
+    assert "_meta" not in legacy["result"]
 
 
 def test_tool_call_returns_structured_result() -> None:
@@ -90,5 +105,5 @@ def test_stdio_keeps_stdout_json_only_and_reports_start_failure_to_stderr() -> N
     lines = outgoing.getvalue().splitlines()
     assert len(lines) == 2
     assert json.loads(lines[0])["error"]["code"] == -32700
-    assert json.loads(lines[1])["result"]["_meta"]["io.modelcontextprotocol/serverInfo"]["name"] == "agent-notifier"
+    assert json.loads(lines[1])["result"] == {}
     assert "service unavailable" in errors.getvalue()
