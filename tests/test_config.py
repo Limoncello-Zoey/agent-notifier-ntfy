@@ -39,6 +39,7 @@ def test_relative_override_is_rejected() -> None:
         ({"topics": {"bad name": "a"}}, "必须由"),
         ({"server": {"base_url": "https://user:secret@example.test"}}, "用户名或密码"),
         ({"server": {"base_url": "https://example.test?q=secret"}}, "查询参数"),
+        ({"monitor": {"queue_capacity": 10}}, "未知字段"),
     ],
 )
 def test_invalid_config_is_rejected(raw: dict, message: str) -> None:

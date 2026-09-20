@@ -16,6 +16,9 @@ from .notification import Notification
 from .sender import SendResult, TopicResult
 
 
+CLIENT_NOTIFY_TIMEOUT_SECONDS = 62
+
+
 def daemon_url(config: Config, path: str) -> str:
     host = f"[{config.monitor.listen_host}]" if ":" in config.monitor.listen_host else config.monitor.listen_host
     return f"http://{host}:{config.monitor.listen_port}{path}"
@@ -26,7 +29,7 @@ def notify_daemon(config: Config, notification: Notification) -> SendResult:
         config,
         "/v1/notify",
         notification.to_dict(),
-        timeout=config.monitor.request_timeout_seconds + 2,
+        timeout=CLIENT_NOTIFY_TIMEOUT_SECONDS,
     )
     try:
         results = tuple(

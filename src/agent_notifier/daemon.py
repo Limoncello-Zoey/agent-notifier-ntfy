@@ -21,6 +21,8 @@ from .sender import NtfySender
 LOGGER = logging.getLogger("agent_notifier.daemon")
 NOTIFY_BODY_LIMIT = 16 * 1024
 OTLP_BODY_LIMIT = 1024 * 1024
+QUEUE_CAPACITY = 100
+NOTIFY_TIMEOUT_SECONDS = 60
 
 
 class NotifierHTTPServer(ThreadingHTTPServer):
@@ -32,7 +34,7 @@ class DaemonRuntime:
     def __init__(self, config: Config, *, sender: NtfySender | None = None) -> None:
         self.config = config
         actual_sender = sender or NtfySender(config)
-        self.queue = SendQueue(actual_sender.send, config.monitor.queue_capacity)
+        self.queue = SendQueue(actual_sender.send, QUEUE_CAPACITY)
         self.monitor = FailureMonitor(config, self.queue.submit_background)
         self.server = NotifierHTTPServer(
             (config.monitor.listen_host, config.monitor.listen_port),
@@ -114,7 +116,7 @@ def _handler_factory(runtime: DaemonRuntime) -> type[BaseHTTPRequestHandler]:
                     raise NotificationError("通知请求必须是 JSON 对象")
                 notification = notification_from_mapping(runtime.config, payload)
                 result = runtime.queue.submit(
-                    notification, runtime.config.monitor.request_timeout_seconds
+                    notification, NOTIFY_TIMEOUT_SECONDS
                 )
             except QueueFullError as exc:
                 self._json(HTTPStatus.TOO_MANY_REQUESTS, {"error": str(exc)})

@@ -30,8 +30,6 @@ SECTION_KEYS = {
         "listen_port",
         "failure_grace_seconds",
         "dedupe_window_seconds",
-        "queue_capacity",
-        "request_timeout_seconds",
     },
 }
 
@@ -53,8 +51,6 @@ class MonitorConfig:
     listen_port: int = 4318
     failure_grace_seconds: int = 30
     dedupe_window_seconds: int = 300
-    queue_capacity: int = 100
-    request_timeout_seconds: int = 60
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,8 +137,6 @@ def parse_config(raw: Mapping[str, Any]) -> Config:
         raise ConfigError("monitor.listen_port 必须在 1..65535 范围内")
     grace = _positive_int(monitor_raw, "failure_grace_seconds", 30)
     dedupe = _positive_int(monitor_raw, "dedupe_window_seconds", 300)
-    capacity = _positive_int(monitor_raw, "queue_capacity", 100)
-    timeout = _positive_int(monitor_raw, "request_timeout_seconds", 60)
 
     topics_raw = _section(raw, "topics")
     groups_raw = _section(raw, "groups")
@@ -177,7 +171,7 @@ def parse_config(raw: Mapping[str, Any]) -> Config:
         version=version,
         server=ServerConfig(base_url),
         defaults=DefaultsConfig(target, priority),
-        monitor=MonitorConfig(listen_host, listen_port, grace, dedupe, capacity, timeout),
+        monitor=MonitorConfig(listen_host, listen_port, grace, dedupe),
         topics=topics,
         groups=groups,
     )
@@ -218,8 +212,6 @@ def validate_config(config: Config) -> Config:
                 "listen_port": config.monitor.listen_port,
                 "failure_grace_seconds": config.monitor.failure_grace_seconds,
                 "dedupe_window_seconds": config.monitor.dedupe_window_seconds,
-                "queue_capacity": config.monitor.queue_capacity,
-                "request_timeout_seconds": config.monitor.request_timeout_seconds,
             },
             "topics": config.topics,
             "groups": config.groups,
@@ -247,8 +239,6 @@ def render_config(config: Config) -> str:
             f"listen_port = {config.monitor.listen_port}",
             f"failure_grace_seconds = {config.monitor.failure_grace_seconds}",
             f"dedupe_window_seconds = {config.monitor.dedupe_window_seconds}",
-            f"queue_capacity = {config.monitor.queue_capacity}",
-            f"request_timeout_seconds = {config.monitor.request_timeout_seconds}",
             "",
             "[topics]",
         ]
@@ -276,9 +266,6 @@ listen_host = "127.0.0.1"
 listen_port = 4318
 failure_grace_seconds = 30
 dedupe_window_seconds = 300
-queue_capacity = 100
-request_timeout_seconds = 60
-
 [topics]
 
 [groups]
